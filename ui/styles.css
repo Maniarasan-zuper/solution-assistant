@@ -1,0 +1,126 @@
+* {
+  box-sizing: border-box;
+}
+body {
+  font-family: system-ui, Arial, sans-serif;
+  margin: 0;
+  background: #f6f7fb;
+  color: #222;
+}
+header {
+  background: #2f6cea;
+  color: #fff;
+  padding: 16px 24px;
+}
+main {
+  display: flex;
+  gap: 16px;
+  padding: 16px;
+}
+.left,
+.right {
+  flex: 1;
+}
+.card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+h1,
+h2,
+h3 {
+  margin: 8px 0 12px;
+}
+.row {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+input,
+select,
+textarea {
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+}
+textarea {
+  min-height: 80px;
+  width: 100%;
+}
+button {
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
+  background: #2f6cea;
+  color: #fff;
+  cursor: pointer;
+}
+button.danger {
+  background: #d64545;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+}
+.list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px;
+  border-bottom: 1px solid #eee;
+}
+.list.small li {
+  font-size: 14px;
+}
+.badge {
+  background: #eef;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+#flowsBox .flow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  align-items: start;
+  padding: 8px;
+  border-bottom: 1px dashed #eee;
+  border-left: 3px solid #eef;
+  padding-left: 8px;
+}
+#flowsBox .flow input,
+#flowsBox .flow textarea {
+  width: 100%;
+}
+/* Toolbar when buttons are injected dynamically */
+.map-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+/* Color chip shown in Markmap labels */
+.mm-chip {
+  display: inline-block;
+  width: 0.65em;
+  height: 0.65em;
+  border-radius: 2px;
+  margin-right: 6px;
+  vertical-align: -0.1em;
+}
+
+/* Left-panel flow rows — JS sets border-left-color + background tint
+#flowsBox .flow {
+  border-left: 3px solid #eef;
+  padding-left: 8px;
+} */
