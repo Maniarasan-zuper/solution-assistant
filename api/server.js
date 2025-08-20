@@ -1,4 +1,4 @@
-// server.js — Express API + static UI, supports subflows and HTML download
+// server.js — Express API + static UI, with customer search (?q=) + subflows + HTML download
 import express from "express";
 import cors from "cors";
 import { pool } from "./db.js";
@@ -7,18 +7,16 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const app = express();
-
-// Body parsing (built into Express 4) — fixes most iconv-lite issues when install is healthy
 app.use(express.json({ limit: "1mb" }));
 app.use(cors());
 
-// Simple request logger
+// Simple logger
 app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
 
-// Content-Security-Policy to allow Markmap scripts from jsdelivr
+// CSP to allow Markmap assets from jsdelivr
 app.use((req, res, next) => {
   res.setHeader(
     "Content-Security-Policy",
@@ -40,9 +38,27 @@ async function execute(sql, params = []) {
   return res;
 }
 
-// ---------- Customers ----------
-app.get("/api/customers", async (_req, res) => {
-  res.json(await query("SELECT id, name, notes FROM Customer ORDER BY name"));
+// LIKE-escape helper using ESCAPE '!'
+function escapeLike(s = "") {
+  return String(s).replace(/!/g, "!!").replace(/%/g, "!%").replace(/_/g, "!_");
+}
+
+// ---------- Customers (SEARCH-ENABLED) ----------
+app.get("/api/customers", async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  if (q) {
+    const like = `%${escapeLike(q)}%`;
+    const rows = await query(
+      "SELECT id, name, notes FROM Customer WHERE name LIKE ? ESCAPE '!' ORDER BY name LIMIT 50",
+      [like]
+    );
+    return res.json(rows);
+  }
+  // default: top 50 (or return [] if you prefer pure search-only)
+  const rows = await query(
+    "SELECT id, name, notes FROM Customer ORDER BY name LIMIT 50"
+  );
+  res.json(rows);
 });
 
 app.get("/api/customers/:id", async (req, res) => {
@@ -136,7 +152,7 @@ app.delete("/api/events/:eventId", async (req, res) => {
   res.status(204).end();
 });
 
-// ---------- Flows ----------
+// ---------- Flows (with subflows) ----------
 app.get("/api/events/:eventId/flows", async (req, res) => {
   res.json(
     await query(
@@ -146,7 +162,6 @@ app.get("/api/events/:eventId/flows", async (req, res) => {
   );
 });
 
-// Top-level flow under an event
 app.post("/api/events/:eventId/flows", async (req, res) => {
   const eventId = Number(req.params.eventId);
   const { name, description, link } = req.body || {};
@@ -155,19 +170,16 @@ app.post("/api/events/:eventId/flows", async (req, res) => {
     "INSERT INTO Flow(eventId, parentFlowId, name, description, link) VALUES(?, NULL, ?, ?, ?)",
     [eventId, name, description || null, link || null]
   );
-  res
-    .status(201)
-    .json({
-      id: r.insertId,
-      eventId,
-      parentFlowId: null,
-      name,
-      description: description || null,
-      link: link || null,
-    });
+  res.status(201).json({
+    id: r.insertId,
+    eventId,
+    parentFlowId: null,
+    name,
+    description: description || null,
+    link: link || null,
+  });
 });
 
-// Child flow under another flow
 app.post("/api/flows/:flowId/subflows", async (req, res) => {
   const parentId = Number(req.params.flowId);
   const { name, description, link } = req.body || {};
@@ -180,16 +192,14 @@ app.post("/api/flows/:flowId/subflows", async (req, res) => {
     "INSERT INTO Flow(eventId, parentFlowId, name, description, link) VALUES(?, ?, ?, ?, ?)",
     [parent.eventId, parentId, name, description || null, link || null]
   );
-  res
-    .status(201)
-    .json({
-      id: r.insertId,
-      eventId: parent.eventId,
-      parentFlowId: parentId,
-      name,
-      description: description || null,
-      link: link || null,
-    });
+  res.status(201).json({
+    id: r.insertId,
+    eventId: parent.eventId,
+    parentFlowId: parentId,
+    name,
+    description: description || null,
+    link: link || null,
+  });
 });
 
 app.put("/api/flows/:flowId", async (req, res) => {
@@ -249,10 +259,9 @@ async function buildMarkmapData(customerId) {
       eventIds
     );
   }
-  // group children by parentFlowId (top-level under event)
   const childrenByParent = new Map();
   for (const f of flows) {
-    const key = f.parentFlowId ?? `event:${f.eventId}`; // use event bucket for top-level
+    const key = f.parentFlowId ?? `event:${f.eventId}`;
     if (!childrenByParent.has(key)) childrenByParent.set(key, []);
     childrenByParent.get(key).push(f);
   }
@@ -278,6 +287,12 @@ async function buildMarkmapData(customerId) {
     })),
   };
 }
+
+// List standard events (for Add Event dropdown)
+app.get("/api/standard-events", async (_req, res) => {
+  const rows = await query("SELECT id, name FROM StandardEvent ORDER BY name");
+  res.json(rows);
+});
 
 app.get("/api/customers/:id/markup", async (req, res) => {
   const id = Number(req.params.id);
@@ -310,22 +325,20 @@ app.get("/api/customers/:id/markup.html", async (req, res) => {
   res.send(html);
 });
 
-// ---------- Static UI (serve your /ui folder at same origin) ----------
+// ---------- Static UI ----------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const uiPath = path.resolve(__dirname, "../ui");
 app.use(express.static(uiPath));
 app.get("/", (_req, res) => res.sendFile(path.join(uiPath, "index.html")));
 
-// Unknown API routes (debug 404s)
+// Unknown API
 app.use("/api", (req, res) =>
-  res
-    .status(404)
-    .json({
-      error: "No such API route",
-      method: req.method,
-      path: req.originalUrl,
-    })
+  res.status(404).json({
+    error: "No such API route",
+    method: req.method,
+    path: req.originalUrl,
+  })
 );
 
 const PORT = process.env.PORT || 3000;

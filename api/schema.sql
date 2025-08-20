@@ -27,3 +27,25 @@ CREATE TABLE IF NOT EXISTS Flow (
   INDEX idx_flow_event (eventId),
   INDEX idx_flow_parent (parentFlowId)
 ) ENGINE=InnoDB;
+
+-- Standard events catalog
+CREATE TABLE IF NOT EXISTS StandardEvent (
+  id   INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(255) NOT NULL UNIQUE
+) ENGINE=InnoDB;
+
+-- Seed (idempotent)
+INSERT IGNORE INTO StandardEvent (name) VALUES
+('New Job'),
+('Job Update'),
+('New Invoice'),
+('Invoice Update'),
+('New Customer'),
+('Customer Update'),
+('New Organization'),
+('Organization Update'),
+('New Product'),
+('Product Update'),
+
+
+ALTER TABLE StandardEvent ADD INDEX idx_standard_event_name (name);

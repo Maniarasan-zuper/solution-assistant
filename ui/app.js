@@ -1,12 +1,12 @@
-// UI with color-coded flows, robust "Add Flow", subflows, and Markmap reset view
+// UI: Add Customer & Add Event moved to modals; everything else inline as before.
 
 // Auto-detect API base
 let API = ""; // same-origin default
 try {
-  const servedByApi = location.port === "3000";
-  if (!servedByApi) API = "http://localhost:3000/api";
+  if (location.port !== "3000") API = "http://localhost:3000/api";
 } catch {}
 
+// HTTP helper
 async function api(path, opts = {}) {
   const base = API || "/api";
   const res = await fetch(base + path, {
@@ -24,14 +24,20 @@ async function api(path, opts = {}) {
   return res.status === 204 ? null : res.json();
 }
 
+// Helpers
+function debounce(fn, wait = 250) {
+  let t;
+  return (...a) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...a), wait);
+  };
+}
 function normalizeTree(node) {
   if (!node || typeof node !== "object") return node;
   if (!Array.isArray(node.children)) node.children = [];
   node.children = node.children.map(normalizeTree);
   return node;
 }
-
-// ---- Color helpers ----
 const COLORS = [
   "#5B8FF9",
   "#61DDAA",
@@ -44,9 +50,9 @@ const COLORS = [
   "#E86452",
   "#6DC8EC",
 ];
-function hexToRgba(hex, alpha = 0.08) {
+function hexToRgba(hex, a = 0.06) {
   const h = hex.replace("#", "");
-  const bigint = parseInt(
+  const v = parseInt(
     h.length === 3
       ? h
           .split("")
@@ -55,17 +61,23 @@ function hexToRgba(hex, alpha = 0.08) {
       : h,
     16
   );
-  const r = (bigint >> 16) & 255,
-    g = (bigint >> 8) & 255,
-    b = bigint & 255;
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  const r = (v >> 16) & 255,
+    g = (v >> 8) & 255,
+    b = v & 255;
+  return `rgba(${r},${g},${b},${a})`;
+}
+function escAttr(s = "") {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;");
 }
 
 // Elements
-const customerList = document.getElementById("customerList");
-const newCustomerName = document.getElementById("newCustomerName");
-const newCustomerNotes = document.getElementById("newCustomerNotes");
-const btnAddCustomer = document.getElementById("btnAddCustomer");
+const customerSearch = document.getElementById("customerSearch");
+const btnClearSearch = document.getElementById("btnClearSearch");
+const customerResults = document.getElementById("customerResults");
+const searchHint = document.getElementById("searchHint");
 
 const detailCard = document.getElementById("detailCard");
 const custName = document.getElementById("custName");
@@ -75,8 +87,6 @@ const btnSaveCustomer = document.getElementById("btnSaveCustomer");
 const btnDeleteCustomer = document.getElementById("btnDeleteCustomer");
 
 const eventSelect = document.getElementById("eventSelect");
-const newEventName = document.getElementById("newEventName");
-const btnAddEvent = document.getElementById("btnAddEvent");
 const eventList = document.getElementById("eventList");
 
 const flowsBox = document.getElementById("flowsBox");
@@ -85,85 +95,107 @@ const flowLink = document.getElementById("flowLink");
 const flowDesc = document.getElementById("flowDesc");
 const btnAddFlow = document.getElementById("btnAddFlow");
 
-const btnDownloadMap = document.getElementById("btnDownloadMap"); // may or may not exist
+const btnAddCustomerTop = document.getElementById("btnAddCustomerTop");
+const btnAddEventTop = document.getElementById("btnAddEventTop");
+const btnDownloadMap = document.getElementById("btnDownloadMap");
+const btnResetView = document.getElementById("btnResetView");
+
 const svg = document.getElementById("mindmap");
+const previewTitle = document.getElementById("previewTitle");
 
+const modalBackdrop = document.getElementById("modalBackdrop");
+const modal = document.getElementById("modal");
+const modalTitle = document.getElementById("modalTitle");
+const modalBody = document.getElementById("modalBody");
+const modalClose = document.getElementById("modalClose");
+
+// State
 let selectedCustomerId = null;
-let currentData = null;
-let mm = null; // Markmap instance
+let currentData = null; // {customer, events, flows}
+let mm = null;
 
-// ----- Helpers for Add Flow -----
-function getSelectedEventId() {
-  const v = Number(eventSelect.value || 0);
-  return Number.isFinite(v) ? v : 0;
+// ---- Modal utils (used only for Add Customer / Add Event) ----
+function openModal(title, bodyEl) {
+  modalTitle.textContent = title;
+  modalBody.innerHTML = "";
+  if (bodyEl) modalBody.appendChild(bodyEl);
+  modalBackdrop.classList.add("show");
+  modal.classList.add("show");
+  modalBackdrop.classList.remove("hidden");
+  modal.classList.remove("hidden");
 }
-function setAddFlowDisabled() {
-  if (btnAddFlow) btnAddFlow.disabled = !getSelectedEventId();
+function closeModal() {
+  modalBackdrop.classList.remove("show");
+  modal.classList.remove("show");
+  setTimeout(() => {
+    modalBackdrop.classList.add("hidden");
+    modal.classList.add("hidden");
+  }, 150);
 }
-
-// Add a Reset View button next to Download (or create a toolbar if missing)
-(function ensureResetButton() {
-  const btn = document.createElement("button");
-  btn.id = "btnResetView";
-  btn.textContent = "Reset View";
-  btn.title = "Recenter & fit the Markmap";
-  btn.onclick = () => {
-    if (mm && typeof mm.fit === "function") mm.fit();
-    else renderMarkmap(); // fallback
-  };
-  if (btnDownloadMap && btnDownloadMap.parentElement) {
-    btnDownloadMap.parentElement.appendChild(btn);
-  } else {
-    const card = document.querySelector(".right .card");
-    const bar = document.createElement("div");
-    bar.className = "map-toolbar";
-    bar.appendChild(btn);
-    card.insertBefore(bar, svg);
-  }
-})();
-
-// Double-click on the canvas resets view
-svg.addEventListener("dblclick", () => {
-  if (mm && typeof mm.fit === "function") mm.fit();
+modalClose.onclick = closeModal;
+modalBackdrop.onclick = (e) => {
+  if (e.target === modalBackdrop) closeModal();
+};
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !modal.classList.contains("hidden")) closeModal();
 });
 
-// Customers
-async function refreshCustomers() {
-  const customers = await api("/customers");
-  customerList.innerHTML = "";
-  customers.forEach((c) => {
+// ---- Search-first UX (list stays inline) ----
+async function searchCustomers(term) {
+  const q = (term || "").trim();
+  if (!q) {
+    customerResults.innerHTML = "";
+    searchHint.style.display = "block";
+    return;
+  }
+  searchHint.style.display = "none";
+  let rs = [];
+  try {
+    rs = await api(`/customers?q=${encodeURIComponent(q)}`);
+  } catch (e) {
+    console.error(e);
+  }
+  customerResults.innerHTML = "";
+  if (!rs.length) {
     const li = document.createElement("li");
+    li.textContent = "No matches";
+    li.className = "muted";
+    customerResults.appendChild(li);
+    return;
+  }
+  rs.forEach((c) => {
+    const li = document.createElement("li");
+    const left = document.createElement("div");
+    left.className = "row";
     const a = document.createElement("a");
     a.href = "#";
     a.textContent = c.name;
     a.onclick = () => selectCustomer(c.id);
-    const meta = document.createElement("span");
-    meta.className = "badge";
-    meta.textContent = "ID " + c.id;
-    li.appendChild(a);
-    li.appendChild(meta);
-    customerList.appendChild(li);
+    left.appendChild(a);
+    const right = document.createElement("div");
+    right.className = "row";
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = "ID " + c.id;
+    right.appendChild(badge);
+    li.appendChild(left);
+    li.appendChild(right);
+    customerResults.appendChild(li);
   });
 }
-
-btnAddCustomer.onclick = async () => {
-  if (!newCustomerName.value.trim()) {
-    alert("Enter a customer name");
-    return;
-  }
-  const c = await api("/customers", {
-    method: "POST",
-    body: {
-      name: newCustomerName.value.trim(),
-      notes: newCustomerNotes.value.trim() || null,
-    },
-  });
-  newCustomerName.value = "";
-  newCustomerNotes.value = "";
-  await refreshCustomers();
-  await selectCustomer(c.id);
+const doSearch = debounce(searchCustomers, 250);
+customerSearch.addEventListener("input", (e) => doSearch(e.target.value));
+customerSearch.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") doSearch(customerSearch.value);
+});
+btnClearSearch.onclick = () => {
+  customerSearch.value = "";
+  customerResults.innerHTML = "";
+  searchHint.style.display = "block";
+  customerSearch.focus();
 };
 
+// ---- Customer load & edit (inline)
 async function selectCustomer(id) {
   selectedCustomerId = id;
   currentData = await api(`/customers/${id}`);
@@ -175,7 +207,6 @@ async function selectCustomer(id) {
   renderEvents();
   await renderMarkmap();
 }
-
 btnSaveCustomer.onclick = async () => {
   if (selectedCustomerId == null) return;
   await api(`/customers/${selectedCustomerId}`, {
@@ -183,21 +214,22 @@ btnSaveCustomer.onclick = async () => {
     body: { name: custEditName.value, notes: custEditNotes.value },
   });
   await selectCustomer(selectedCustomerId);
-  await refreshCustomers();
+  if (customerSearch.value.trim()) doSearch(customerSearch.value);
 };
-
 btnDeleteCustomer.onclick = async () => {
   if (selectedCustomerId == null) return;
   if (!confirm("Delete this customer and all its events/flows?")) return;
   await api(`/customers/${selectedCustomerId}`, { method: "DELETE" });
   selectedCustomerId = null;
   detailCard.style.display = "none";
-  await refreshCustomers();
+  await renderMarkmap();
+  if (customerSearch.value.trim()) doSearch(customerSearch.value);
+  else customerResults.innerHTML = "";
 };
 
-// Events
+// ---- Events (inline select/list; Add Event moved to modal)
 function renderEvents() {
-  // Dropdown
+  // fill dropdown
   eventSelect.innerHTML = "";
   currentData.events.forEach((e) => {
     const opt = document.createElement("option");
@@ -205,20 +237,19 @@ function renderEvents() {
     opt.textContent = e.name;
     eventSelect.appendChild(opt);
   });
-  // Auto-select first event if none selected
-  if (!eventSelect.value && currentData.events[0]) {
+  if (!eventSelect.value && currentData.events[0])
     eventSelect.value = currentData.events[0].id;
-  }
-  setAddFlowDisabled();
 
-  // List
+  // list with rename/delete
   eventList.innerHTML = "";
   currentData.events.forEach((e) => {
     const li = document.createElement("li");
     li.innerHTML = `${e.name} <span class="badge">#${e.id}</span>`;
     const right = document.createElement("div");
+    right.className = "row";
     const btnEdit = document.createElement("button");
     btnEdit.textContent = "Rename";
+    btnEdit.className = "secondary";
     btnEdit.onclick = async () => {
       const name = prompt("New name", e.name);
       if (name && name.trim()) {
@@ -242,38 +273,25 @@ function renderEvents() {
     li.appendChild(right);
     eventList.appendChild(li);
   });
+
   renderFlows();
 }
-btnAddEvent.onclick = async () => {
-  if (selectedCustomerId == null) return;
-  if (!newEventName.value.trim()) {
-    alert("Enter an event name");
-    return;
-  }
-  await api(`/customers/${selectedCustomerId}/events`, {
-    method: "POST",
-    body: { name: newEventName.value.trim() },
-  });
-  newEventName.value = "";
-  await selectCustomer(selectedCustomerId);
-};
-eventSelect.onchange = () => {
-  renderFlows();
-  setAddFlowDisabled();
-};
+eventSelect.onchange = () => renderFlows();
 
-// Flows (nested, color-coded)
+// ---- Flows (inline)
 function renderFlows() {
   flowsBox.innerHTML = "";
-  const selectedEventId = getSelectedEventId();
+  const selectedEventId = Number(
+    eventSelect.value || (currentData.events[0]?.id ?? 0)
+  );
   if (!selectedEventId) {
     const p = document.createElement("p");
     p.textContent = "Add or select an event to manage flows.";
-    p.style.color = "#666";
+    p.className = "muted";
     flowsBox.appendChild(p);
+    btnAddFlow.onclick = () => alert("Please add/select an event first.");
     return;
   }
-
   const flows = currentData.flows.filter((f) => f.eventId === selectedEventId);
   const childrenByParent = new Map();
   for (const f of flows) {
@@ -282,34 +300,32 @@ function renderFlows() {
     childrenByParent.get(key).push(f);
   }
   const top = childrenByParent.get(0) || [];
-  // Assign a distinct color to each top-level flow
   const colorByTopId = new Map();
   top.forEach((f, i) => colorByTopId.set(f.id, COLORS[i % COLORS.length]));
 
-  function renderRow(f, level = 0, inheritColor) {
+  function row(f, level = 0, inheritColor) {
     const color = inheritColor || colorByTopId.get(f.id) || COLORS[0];
-
-    const row = document.createElement("div");
-    row.className = "flow";
-    row.style.marginLeft = level * 16 + "px";
-    row.style.borderLeftColor = color;
-    row.style.background = hexToRgba(color, 0.06);
-
-    row.innerHTML = `
-      <input value="${f.name}" data-field="name"/>
-      <input value="${f.link || ""}" data-field="link"/>
-      <textarea data-field="description">${f.description || ""}</textarea>
+    const el = document.createElement("div");
+    el.className = "flow";
+    el.style.marginLeft = level * 16 + "px";
+    el.style.borderLeftColor = color;
+    el.style.background = hexToRgba(color, 0.06);
+    el.innerHTML = `
+      <input value="${escAttr(f.name)}" data-field="name"/>
+      <input value="${escAttr(f.link || "")}" data-field="link"/>
+      <textarea data-field="description">${escAttr(
+        f.description || ""
+      )}</textarea>
       <div>
         <button data-action="save">Save</button>
         <button data-action="addsub">Add Subflow</button>
         <button data-action="delete" class="danger">Delete</button>
       </div>
     `;
-
-    row.querySelector('[data-action="save"]').onclick = async () => {
-      const name = row.querySelector('[data-field="name"]').value.trim();
-      const link = row.querySelector('[data-field="link"]').value.trim();
-      const description = row
+    el.querySelector('[data-action="save"]').onclick = async () => {
+      const name = el.querySelector('[data-field="name"]').value.trim();
+      const link = el.querySelector('[data-field="link"]').value.trim();
+      const description = el
         .querySelector('[data-field="description"]')
         .value.trim();
       await api("/flows/" + f.id, {
@@ -319,7 +335,7 @@ function renderFlows() {
       await selectCustomer(selectedCustomerId);
       await renderMarkmap();
     };
-    row.querySelector('[data-action="addsub"]').onclick = async () => {
+    el.querySelector('[data-action="addsub"]').onclick = async () => {
       const name = prompt("Subflow name");
       if (!name || !name.trim()) return;
       const link = prompt("Link (optional)") || "";
@@ -335,117 +351,240 @@ function renderFlows() {
       await selectCustomer(selectedCustomerId);
       await renderMarkmap();
     };
-    row.querySelector('[data-action="delete"]').onclick = async () => {
+    el.querySelector('[data-action="delete"]').onclick = async () => {
       if (!confirm("Delete this flow and all its subflows?")) return;
       await api("/flows/" + f.id, { method: "DELETE" });
       await selectCustomer(selectedCustomerId);
       await renderMarkmap();
     };
-    flowsBox.appendChild(row);
-
-    (childrenByParent.get(f.id) || []).forEach((child) =>
-      renderRow(child, level + 1, color)
+    flowsBox.appendChild(el);
+    (childrenByParent.get(f.id) || []).forEach((ch) =>
+      row(ch, level + 1, color)
     );
   }
+  top.forEach((f) => row(f, 0, colorByTopId.get(f.id)));
 
-  top.forEach((f) => renderRow(f, 0, colorByTopId.get(f.id)));
-}
-
-// Add Flow (top-level under selected event) — hardened
-btnAddFlow.onclick = async () => {
-  const eventId = getSelectedEventId();
-  if (!eventId) {
-    alert("Please create/select an event first.");
-    return;
-  }
-
-  const name = (flowName.value || "").trim();
-  if (!name) {
-    alert("Enter a flow name");
-    flowName.focus();
-    return;
-  }
-
-  const link = (flowLink.value || "").trim() || null;
-  const description = (flowDesc.value || "").trim() || null;
-
-  try {
-    await api(`/events/${eventId}/flows`, {
-      method: "POST",
-      body: { name, link, description },
-    });
-  } catch (e) {
-    console.error("Add flow failed:", e);
-    alert(
-      "Add flow failed. Details:\n" +
-        e.message +
-        "\n\nIf it shows 404, ensure your server exposes POST /api/events/:eventId/flows and you are opening http://localhost:3000 (same origin)."
-    );
-    return;
-  }
-
-  // Clear and refresh
-  flowName.value = "";
-  flowLink.value = "";
-  flowDesc.value = "";
-  await selectCustomer(selectedCustomerId);
-  await renderMarkmap();
-};
-
-// Download HTML (if button exists in your HTML)
-if (btnDownloadMap) {
-  btnDownloadMap.onclick = () => {
-    if (!selectedCustomerId) {
-      alert("Select a customer first");
+  btnAddFlow.onclick = async () => {
+    const name = (flowName.value || "").trim();
+    if (!name) {
+      alert("Enter a flow name");
+      flowName.focus();
       return;
     }
-    const base = API ? API.replace(/\/api$/, "") : "";
-    const url = `${base}/api/customers/${selectedCustomerId}/markup.html`;
-    window.open(url, "_blank");
+    const link = (flowLink.value || "").trim() || null;
+    const description = (flowDesc.value || "").trim() || null;
+    try {
+      await api(`/events/${selectedEventId}/flows`, {
+        method: "POST",
+        body: { name, link, description },
+      });
+    } catch (e) {
+      alert("Add flow failed.\n" + e.message);
+      return;
+    }
+    flowName.value = "";
+    flowLink.value = "";
+    flowDesc.value = "";
+    await selectCustomer(selectedCustomerId);
+    await renderMarkmap();
   };
 }
 
-// Markmap: colorize the tree by top-level flow (adds a small chip before labels)
+// ---- Markmap preview (unchanged)
 function colorizeMarkmapData(data) {
   if (!data?.children) return data;
   data.children.forEach((eventNode) => {
     const topFlows = eventNode.children || [];
     topFlows.forEach((flowNode, i) => {
       const color = COLORS[i % COLORS.length];
-      applyChip(flowNode, color);
+      const chip = `<span class="mm-chip" style="background:${color}"></span>`;
+      const apply = (n) => {
+        if (typeof n.content === "string" && !n.content.includes("mm-chip"))
+          n.content = chip + n.content;
+        (n.children || []).forEach(apply);
+      };
+      apply(flowNode);
     });
   });
   return data;
-
-  function applyChip(node, color) {
-    const chip = `<span class="mm-chip" style="background:${color}"></span>`;
-    if (typeof node.content === "string" && !node.content.includes("mm-chip")) {
-      node.content = chip + node.content;
-    }
-    if (Array.isArray(node.children))
-      node.children.forEach((ch) => applyChip(ch, color));
-  }
 }
-
 async function renderMarkmap() {
-  if (!selectedCustomerId) return;
+  svg.replaceChildren();
+  if (!selectedCustomerId) {
+    const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    t.setAttribute("x", "16");
+    t.setAttribute("y", "28");
+    t.textContent = "Select a customer to preview.";
+    svg.appendChild(t);
+    return;
+  }
   let data = await api(`/customers/${selectedCustomerId}/markup`);
-  data = normalizeTree(data);
-  data = colorizeMarkmapData(data);
-
-  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  data = colorizeMarkmapData(normalizeTree(data));
   try {
-    // Keep a global instance to call fit()
     mm = window.markmap.Markmap.create(svg, null, data);
   } catch (err) {
-    console.error("Markmap render error:", err, data);
+    console.error("Markmap error", err);
     const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    t.setAttribute("x", "12");
-    t.setAttribute("y", "24");
-    t.textContent = "Failed to render map. Check console for details.";
+    t.setAttribute("x", "16");
+    t.setAttribute("y", "28");
+    t.textContent = "Failed to render map.";
     svg.appendChild(t);
   }
 }
+btnResetView.onclick = () => {
+  if (mm && typeof mm.fit === "function") mm.fit();
+};
+svg.addEventListener("dblclick", () => {
+  if (mm && typeof mm.fit === "function") mm.fit();
+});
+btnDownloadMap.onclick = () => {
+  if (!selectedCustomerId) {
+    alert("Select a customer first");
+    return;
+  }
+  const base = API ? API.replace(/\/api$/, "") : "";
+  window.open(
+    `${base}/api/customers/${selectedCustomerId}/markup.html`,
+    "_blank"
+  );
+};
 
-// Init
-refreshCustomers();
+// ---- Add Customer (modal)
+btnAddCustomerTop.onclick = () => {
+  const box = document.createElement("div");
+  box.className = "section";
+  box.innerHTML = `
+    <div class="row">
+      <input id="m_custName" placeholder="Customer name" style="min-width:280px;"/>
+      <input id="m_custNotes" placeholder="Notes (optional)" style="min-width:280px;"/>
+    </div>
+    <div class="row">
+      <button id="m_save">Create</button>
+    </div>
+  `;
+  box.querySelector("#m_save").onclick = async () => {
+    const name = box.querySelector("#m_custName").value.trim();
+    const notes = box.querySelector("#m_custNotes").value.trim() || null;
+    if (!name) {
+      alert("Enter a customer name");
+      return;
+    }
+    const c = await api("/customers", {
+      method: "POST",
+      body: { name, notes },
+    });
+    closeModal();
+    await selectCustomer(c.id);
+    if (customerSearch.value.trim()) doSearch(customerSearch.value);
+  };
+  openModal("Add Customer", box);
+};
+
+// ---- Add Event (modal) — uses selected customer if present; otherwise lets you pick
+btnAddEventTop.onclick = async () => {
+  // load standard events
+  let std = [];
+  try {
+    std = await api("/standard-events");
+  } catch (e) {
+    console.error(e);
+  }
+  const box = document.createElement("div");
+  box.className = "section";
+  box.innerHTML = `
+    <div class="row">
+      <label style="min-width:120px;">Customer</label>
+      <select id="m_eventCustomer" style="min-width:300px;"></select>
+      <input id="m_eventCustSearch" placeholder="Search customers…" style="min-width:220px;" />
+    </div>
+    <div class="row">
+      <label style="min-width:120px;">Event</label>
+      <select id="m_eventStd" style="min-width:280px;">
+        <option value="" selected disabled>Choose a standard event…</option>
+        ${std
+          .map(
+            (s) =>
+              `<option value="${escAttr(s.name)}">${escAttr(s.name)}</option>`
+          )
+          .join("")}
+        <option value="__OTHER__">Other…</option>
+      </select>
+      <input id="m_eventName" placeholder="Custom event name" style="display:none; min-width:280px;"/>
+    </div>
+    <div class="row">
+      <button id="m_addEvent">Add Event</button>
+    </div>
+  `;
+  const selCustomer = box.querySelector("#m_eventCustomer");
+  const inpSearch = box.querySelector("#m_eventCustSearch");
+
+  async function fillCustomers(term) {
+    let rows = [];
+    try {
+      rows = await api(
+        `/customers${term ? `?q=${encodeURIComponent(term)}` : ""}`
+      );
+    } catch {}
+    selCustomer.innerHTML = "";
+    if (selectedCustomerId && currentData?.customer?.name) {
+      const opt = document.createElement("option");
+      opt.value = String(selectedCustomerId);
+      opt.textContent = `${currentData.customer.name} (selected)`;
+      selCustomer.appendChild(opt);
+    }
+    rows.forEach((c) => {
+      if (String(c.id) === String(selectedCustomerId)) return;
+      const opt = document.createElement("option");
+      opt.value = String(c.id);
+      opt.textContent = c.name;
+      selCustomer.appendChild(opt);
+    });
+  }
+  await fillCustomers("");
+  inpSearch.addEventListener(
+    "input",
+    debounce(() => fillCustomers(inpSearch.value), 250)
+  );
+
+  const stdSel = box.querySelector("#m_eventStd");
+  const nameInp = box.querySelector("#m_eventName");
+  stdSel.addEventListener("change", () => {
+    if (stdSel.value === "__OTHER__") {
+      nameInp.style.display = "";
+      nameInp.focus();
+    } else {
+      nameInp.style.display = "none";
+      nameInp.value = "";
+    }
+  });
+
+  box.querySelector("#m_addEvent").onclick = async () => {
+    const cid = Number(selCustomer.value || 0);
+    if (!cid) {
+      alert("Pick a customer");
+      return;
+    }
+    let name = "";
+    if (stdSel.value === "__OTHER__") {
+      name = (nameInp.value || "").trim();
+      if (!name) {
+        alert("Enter a custom event name");
+        return;
+      }
+    } else {
+      name = (stdSel.value || "").trim();
+      if (!name) {
+        alert("Choose a standard event or Other…");
+        return;
+      }
+    }
+    await api(`/customers/${cid}/events`, { method: "POST", body: { name } });
+    closeModal();
+    if (cid === selectedCustomerId) await selectCustomer(cid);
+  };
+
+  openModal("Add Event", box);
+};
+
+// ---- Init
+customerSearch.focus();
