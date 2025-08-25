@@ -1,4 +1,4 @@
-// Customer workspace: selected event only; flows via modal add/edit; live preview OFF; no PDF button
+// ui/customer.js — Markdown description + clean UX (no reorder)
 
 // ---------- API base ----------
 let API = "";
@@ -65,9 +65,20 @@ function escHtml(s = "") {
   return String(s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 const norm = (s) => (s || "").trim().toLowerCase();
+
+// ---------- Markdown (client-side, safe) ----------
+const MD = window.markdownit
+  ? window.markdownit({ html: false, linkify: true, breaks: true })
+  : null;
+function renderMarkdownSafe(txt = "") {
+  if (!MD) return escHtml(txt);
+  const raw = MD.render(String(txt || ""));
+  return window.DOMPurify ? DOMPurify.sanitize(raw) : raw;
+}
 
 // ---------- elements ----------
 const pageTitle = document.getElementById("pageTitle");
@@ -78,6 +89,7 @@ const eventSelect = document.getElementById("eventSelect");
 const eventList = document.getElementById("eventList");
 const btnAddEventTop = document.getElementById("btnAddEventTop");
 
+const addFlowRow = document.getElementById("addFlowRow");
 const btnAddFlowOpen = document.getElementById("btnAddFlowOpen");
 const flowsBox = document.getElementById("flowsBox");
 
@@ -87,8 +99,6 @@ const btnTogglePreview = document.getElementById("btnTogglePreview");
 const btnDownloadDoc = document.getElementById("btnDownloadDoc");
 const btnDownloadMap = document.getElementById("btnDownloadMap");
 const btnResetView = document.getElementById("btnResetView");
-
-const addFlowRow = document.getElementById("addFlowRow");
 
 // Modal
 const modalBackdrop = document.getElementById("modalBackdrop");
@@ -122,6 +132,114 @@ modalBackdrop.onclick = (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !modal.classList.contains("hidden")) closeModal();
 });
+
+// actions (outside/right, below the card)
+const actions = document.createElement("div");
+actions.className = "flow-actions-out";
+actions.innerHTML = `
+  <button class="icon secondary" data-edit>Edit</button>
+  <button class="icon" data-move title="Move this flow (and subflows)">Move</button>
+  <button class="icon" data-addsub>Add Sub-workflow</button>
+  <button class="icon danger" data-delete>Delete</button>
+`;
+actions.querySelector("[data-move]").onclick = () => showMoveModal(f);
+
+function showMoveModal(flow) {
+  // Build destination EVENT select
+  const evSel = document.createElement("select");
+  evSel.className = "select-wide";
+  (currentData.events || []).forEach((ev) => {
+    const opt = document.createElement("option");
+    opt.value = ev.id;
+    opt.textContent = ev.name;
+    if (Number(ev.id) === Number(flow.eventId)) opt.selected = true;
+    evSel.appendChild(opt);
+  });
+
+  // Build PARENT select (top level + flows in selected event)
+  const parentSel = document.createElement("select");
+  parentSel.className = "select-wide";
+
+  function fillParents(eventId) {
+    parentSel.innerHTML = "";
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "(Top level)";
+    parentSel.appendChild(none);
+
+    const flows = currentData.flows.filter(
+      (x) => Number(x.eventId) === Number(eventId)
+    );
+    // flat list, indented by depth; exclude the flow itself to avoid cycles
+    const childrenByParent = new Map();
+    for (const fl of flows) {
+      const k = fl.parentFlowId || 0;
+      (childrenByParent.get(k) || childrenByParent.set(k, []).get(k)).push(fl);
+    }
+    // breadth-first over the hierarchy
+    const queue = (childrenByParent.get(0) || []).map((f) => ({ f, depth: 0 }));
+    while (queue.length) {
+      const { f, depth } = queue.shift();
+      if (f.id === flow.id) continue;
+      const opt = document.createElement("option");
+      opt.value = f.id;
+      opt.textContent = `${"  ".repeat(Math.min(depth, 3))}${f.name}`;
+      parentSel.appendChild(opt);
+      (childrenByParent.get(f.id) || []).forEach((ch) =>
+        queue.push({ f: ch, depth: depth + 1 })
+      );
+    }
+  }
+  fillParents(Number(evSel.value));
+  evSel.onchange = () => fillParents(Number(evSel.value));
+
+  // Modal body
+  const box = document.createElement("div");
+  box.className = "grid-form";
+  box.innerHTML = `
+    <div class="row">
+      <label class="lbl" style="width:auto;min-width:84px;">Event</label>
+    </div>
+  `;
+  box.appendChild(evSel);
+  const row2 = document.createElement("div");
+  row2.className = "row";
+  row2.innerHTML = `<label class="lbl" style="width:auto;min-width:84px;">Parent</label>`;
+  box.appendChild(row2);
+  box.appendChild(parentSel);
+  const row3 = document.createElement("div");
+  row3.className = "row";
+  const bMove = document.createElement("button");
+  bMove.textContent = "Move";
+  const bCancel = document.createElement("button");
+  bCancel.textContent = "Cancel";
+  bCancel.className = "secondary";
+  row3.appendChild(bMove);
+  row3.appendChild(bCancel);
+  box.appendChild(row3);
+
+  bCancel.onclick = closeModal;
+  bMove.onclick = async () => {
+    const toEventId = Number(evSel.value);
+    const parentFlowId = parentSel.value ? Number(parentSel.value) : null;
+    try {
+      await api(`/flows/${flow.id}/move`, {
+        method: "POST",
+        body: { toEventId, parentFlowId },
+      });
+    } catch (e) {
+      alert(e.message || "Move failed");
+      return;
+    }
+    closeModal();
+    // Show the destination event after move
+    preferredEventId = toEventId;
+    await loadCustomer(toEventId);
+    if (livePreview) await renderMarkmap();
+  };
+
+  openModal("Move Flow", box);
+}
 
 // ---------- state ----------
 let customerId = Number(getParam("id") || 0);
@@ -238,58 +356,36 @@ async function loadCustomer(forceEventId = null) {
 
 // ---------- events UI ----------
 function renderEvents() {
-  // Do we have any events?
-  const hasEvents =
-    Array.isArray(currentData?.events) && currentData.events.length > 0;
+  const hasEvents = !!(currentData.events && currentData.events.length);
 
-  // Toggle the "Add Flow" row (starts hidden in HTML)
-  if (typeof addFlowRow !== "undefined" && addFlowRow) {
-    addFlowRow.style.display = hasEvents ? "" : "none";
-  } else if (typeof btnAddFlowOpen !== "undefined" && btnAddFlowOpen) {
-    // Fallback if wrapper row was not added
-    btnAddFlowOpen.style.display = hasEvents ? "" : "none";
-  }
+  // Toggle "Add Flow" row visibility
+  if (addFlowRow) addFlowRow.style.display = hasEvents ? "" : "none";
 
-  // When there are NO events: hide selector & list, show the inline "Add Event" CTA, stop here
   if (!hasEvents) {
     if (eventSelectRow) eventSelectRow.style.display = "none";
-    if (eventSelect) eventSelect.innerHTML = "";
+    eventSelect.innerHTML = "";
     eventList.innerHTML = "";
     flowsBox.innerHTML = `
-        <div class="empty">
-          <p class="muted">No events yet for this customer.</p>
-          <div class="row"><button id="btnAddEventInline">Add Event</button></div>
-        </div>
-      `;
+      <div class="empty">
+        <p class="muted">No events yet for this customer.</p>
+        <div class="row"><button id="btnAddEventInline">Add Event</button></div>
+      </div>
+    `;
     const inlineBtn = document.getElementById("btnAddEventInline");
     if (inlineBtn) inlineBtn.onclick = () => btnAddEventTop.click();
     return;
   }
 
-  // There ARE events: show the select row and populate it
   if (eventSelectRow) eventSelectRow.style.display = "";
-
-  // Rebuild the dropdown
   eventSelect.innerHTML = "";
-  for (const e of currentData.events) {
+  currentData.events.forEach((e) => {
     const opt = document.createElement("option");
     opt.value = e.id;
     opt.textContent = e.name;
     eventSelect.appendChild(opt);
-  }
+  });
+  setSelectedEventId(preferredEventId);
 
-  // Keep/restore selection: prefer previously chosen id, else first event
-  const existingIds = new Set(currentData.events.map((e) => Number(e.id)));
-  let desired = preferredEventId ?? (Number(eventSelect.value) || null);
-  if (desired && existingIds.has(Number(desired))) {
-    eventSelect.value = String(desired);
-  } else {
-    eventSelect.value = String(currentData.events[0].id);
-    desired = Number(eventSelect.value);
-  }
-  preferredEventId = Number(desired);
-
-  // Render only the selected event row and its flows
   renderSelectedEventRow();
   renderFlows();
 }
@@ -307,7 +403,7 @@ function renderSelectedEventRow() {
   if (!e) return;
 
   const li = document.createElement("li");
-  li.innerHTML = `${e.name} <span class="badge">#${e.id}</span>`;
+  li.innerHTML = `${escHtml(e.name)} <span class="badge">#${e.id}</span>`;
   const right = document.createElement("div");
   right.className = "row";
   const btnEdit = document.createElement("button");
@@ -338,7 +434,7 @@ function renderSelectedEventRow() {
   eventList.appendChild(li);
 }
 
-// ---------- Flow Modals ----------
+// ---------- Flow Modal (Write / Preview with Markdown) ----------
 function flowForm({ title, defaults = {}, onSubmit }) {
   const box = document.createElement("div");
   box.className = "grid-form";
@@ -357,23 +453,70 @@ function flowForm({ title, defaults = {}, onSubmit }) {
     </div>
     <div class="row">
       <label class="lbl" style="width:auto;min-width:84px;">Description</label>
-<textarea id="f_desc" class="wiki-editor" placeholder="Describe the flow. Use headings, bullet points, and steps.">${
-    defaults.description || ""
-  }</textarea>
-
-
+      <div class="md-tabs">
+        <button type="button" class="tab active" id="tabWrite">Write</button>
+        <button type="button" class="tab" id="tabPreview">Preview</button>
+      </div>
+      <textarea id="f_desc" class="wiki-editor" placeholder="Use **Markdown**: headings, lists, code, links, etc.">${
+        defaults.description || ""
+      }</textarea>
+      <div id="f_preview" class="md-preview" style="display:none;"></div>
     </div>
     <div class="row">
       <button id="f_save">Save</button>
       <button id="f_cancel" class="secondary" type="button">Cancel</button>
     </div>
-    <div class="hint">Tip: You can paste multiple lines; they’ll be preserved.</div>
+    <div class="hint">Tip: Use Markdown. Example: <code>- Step 1</code>, <code>**bold**</code>, <code>\`code\`</code>, <code>[text](https://...)</code></div>
   `;
+
+  const nameEl = box.querySelector("#f_name");
+  const linkEl = box.querySelector("#f_link");
+  const descEl = box.querySelector("#f_desc");
+  const prevEl = box.querySelector("#f_preview");
+  const tWrite = box.querySelector("#tabWrite");
+  const tPrev = box.querySelector("#tabPreview");
+
+  // Auto-resize textarea
+  function autoResizeTA(el) {
+    const max = 900;
+    el.style.height = "auto";
+    el.style.height = Math.min(max, el.scrollHeight + 2) + "px";
+  }
+  ["input", "change"].forEach((ev) =>
+    descEl.addEventListener(ev, () => {
+      autoResizeTA(descEl);
+      if (!prevEl.hidden) renderPreview();
+    })
+  );
+  setTimeout(() => autoResizeTA(descEl), 0);
+
+  function renderPreview() {
+    prevEl.innerHTML = renderMarkdownSafe(descEl.value);
+  }
+
+  function showWrite() {
+    tWrite.classList.add("active");
+    tPrev.classList.remove("active");
+    descEl.style.display = "";
+    prevEl.style.display = "none";
+    prevEl.hidden = true;
+  }
+  function showPreview() {
+    tPrev.classList.add("active");
+    tWrite.classList.remove("active");
+    renderPreview();
+    prevEl.style.display = "";
+    prevEl.hidden = false;
+    descEl.style.display = "none";
+  }
+  tWrite.onclick = showWrite;
+  tPrev.onclick = showPreview;
+
   box.querySelector("#f_cancel").onclick = closeModal;
   box.querySelector("#f_save").onclick = async () => {
-    const name = box.querySelector("#f_name").value.trim();
-    const link = box.querySelector("#f_link").value.trim();
-    const description = box.querySelector("#f_desc").value.trim();
+    const name = nameEl.value.trim();
+    const link = linkEl.value.trim();
+    const description = descEl.value; // keep raw markdown
     if (!name) {
       alert("Enter a title for the flow");
       return;
@@ -390,17 +533,6 @@ function flowForm({ title, defaults = {}, onSubmit }) {
     }
     closeModal();
   };
-  // Auto-resize the description like a wiki editor
-  const ta = box.querySelector("#f_desc");
-  function autoResizeTA(el) {
-    const max = 900; // px cap to avoid runaway growth
-    el.style.height = "auto";
-    el.style.height = Math.min(max, el.scrollHeight + 2) + "px";
-  }
-  ["input", "change"].forEach((ev) =>
-    ta.addEventListener(ev, () => autoResizeTA(ta))
-  );
-  setTimeout(() => autoResizeTA(ta), 0); // initialize after DOM paint
 
   openModal(title, box);
 }
@@ -409,7 +541,8 @@ function flowForm({ title, defaults = {}, onSubmit }) {
 btnAddFlowOpen.onclick = () => {
   const selectedEventId = preferredEventId ?? getCurrentSelectedEventId();
   if (!selectedEventId) {
-    alert("Add an event first");
+    // No events yet? Open Add Event modal directly.
+    btnAddEventTop.click();
     return;
   }
   const keep = selectedEventId;
@@ -457,47 +590,63 @@ function renderFlows() {
   function makeRow(f, level = 0, inheritColor) {
     const color = inheritColor || colorByTopId.get(f.id) || COLORS[0];
 
+    // wrapper carries indentation + keeps actions aligned
     const wrap = document.createElement("div");
     wrap.className = "flow-wrap";
     wrap.style.marginLeft = level * 16 + "px";
+    wrap.dataset.flowId = String(f.id);
+    wrap.dataset.parentId = String(f.parentFlowId || 0);
 
+    // card body
     const card = document.createElement("div");
     card.className = "flow";
     card.style.borderLeftColor = color;
     card.style.background = hexToRgba(color, 0.06);
 
     const hasLink = !!(f.link && String(f.link).trim());
-    const descHtml = f.description
-      ? escHtml(f.description)
-      : '<span class="muted">—</span>';
+    const descHtml =
+      f.description && f.description.trim()
+        ? renderMarkdownSafe(f.description) // ✅ render Markdown
+        : '<span class="muted">—</span>';
     const linkHtml = hasLink
       ? `<a href="${escHtml(f.link)}" target="_blank" rel="noopener">${escHtml(
           f.link
         )}</a>`
       : `<span class="muted">No link</span>`;
 
+    // IMPORTANT: insert descHtml as HTML (not textContent)
     card.innerHTML = `
       <div class="kv">
         <div class="k">Name</div>
         <div class="v"><div class="title">${escHtml(f.name)}</div></div>
-  
-        <!-- ✨ Full-width DESCRIPTION -->
+
         <div class="k k-desc">Description</div>
-        <div class="v v-desc"><div class="desc">${descHtml}</div></div>
-  
+        <div class="v v-desc"><div class="desc md">${descHtml}</div></div>
+
         <div class="k">Link</div>
         <div class="v"><div class="link">${linkHtml}</div></div>
       </div>
     `;
 
+    // actions (outside/right, below the card)
     const actions = document.createElement("div");
     actions.className = "flow-actions-out";
     actions.innerHTML = `
-      <button class="icon secondary" data-edit title="Edit this flow">Edit</button>
-      <button class="icon" data-addsub title="Add a sub-workflow">Add Sub-workflow</button>
-      <button class="icon danger" data-delete title="Delete this flow">Delete</button>
-    `;
+  <button class="icon secondary" data-edit>Edit</button>
+  <button class="icon" data-move title="Move this flow (and subflows)">Move</button>
+  <button class="icon" data-addsub>Add Sub-workflow</button>
+  <button class="icon danger" data-delete>Delete</button>
+`;
 
+    // handlers (keep your existing edit/addsub/delete; add this line for Move)
+    actions.querySelector("[data-move]").onclick = () => showMoveModal(f);
+
+    // mount (keep as-is)
+    wrap.appendChild(card);
+    wrap.appendChild(actions);
+    flowsBox.appendChild(wrap);
+
+    // handlers
     actions.querySelector("[data-edit]").onclick = () => {
       const keep = preferredEventId ?? getCurrentSelectedEventId();
       flowForm({
@@ -517,7 +666,6 @@ function renderFlows() {
         },
       });
     };
-
     actions.querySelector("[data-addsub]").onclick = () => {
       const keep = preferredEventId ?? getCurrentSelectedEventId();
       flowForm({
@@ -532,7 +680,6 @@ function renderFlows() {
         },
       });
     };
-
     actions.querySelector("[data-delete]").onclick = async () => {
       const keep = preferredEventId ?? getCurrentSelectedEventId();
       if (!confirm("Delete this flow and all its subflows?")) return;
@@ -541,10 +688,12 @@ function renderFlows() {
       if (livePreview) await renderMarkmap();
     };
 
+    // mount
     wrap.appendChild(card);
     wrap.appendChild(actions);
     flowsBox.appendChild(wrap);
 
+    // children
     (childrenByParent.get(f.id) || []).forEach((ch) =>
       makeRow(ch, level + 1, color)
     );
@@ -560,7 +709,7 @@ function renderFlows() {
   }
 }
 
-// ---------- Add Event (modal) with duplicate guard ----------
+// ---------- Add Event (modal) with duplicate guard + standard events ----------
 btnAddEventTop.onclick = async () => {
   const existing = new Set(
     (currentData?.events || []).map((e) => norm(e.name))

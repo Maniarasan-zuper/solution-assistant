@@ -342,117 +342,260 @@ eventSelect.onchange = () => {
 // ---------- flows (inline)
 function renderFlows() {
   flowsBox.innerHTML = "";
-  const selectedEventId = Number(
-    eventSelect.value || (currentData.events[0]?.id ?? 0)
-  );
+  const selectedEventId =
+    preferredEventId ??
+    getCurrentSelectedEventId() ??
+    currentData.events[0]?.id ??
+    null;
   if (!selectedEventId) {
     const p = document.createElement("p");
-    p.textContent = "Add or select an event to manage flows.";
+    p.textContent = "Select an event to manage flows.";
     p.className = "muted";
     flowsBox.appendChild(p);
-    btnAddFlow.onclick = () => alert("Please add/select an event first.");
     return;
   }
-  const flows = currentData.flows.filter((f) => f.eventId === selectedEventId);
+
+  const flows = currentData.flows.filter(
+    (f) => Number(f.eventId) === Number(selectedEventId)
+  );
   const childrenByParent = new Map();
   for (const f of flows) {
     const key = f.parentFlowId || 0;
     if (!childrenByParent.has(key)) childrenByParent.set(key, []);
     childrenByParent.get(key).push(f);
   }
+
+  // Sort by sortOrder if present, else by id
+  for (const [k, arr] of childrenByParent) {
+    arr.sort((a, b) => {
+      const sa = a.sortOrder ?? 0,
+        sb = b.sortOrder ?? 0;
+      return sa !== sb ? sa - sb : a.id - b.id;
+    });
+  }
+
   const top = childrenByParent.get(0) || [];
   const colorByTopId = new Map();
   top.forEach((f, i) => colorByTopId.set(f.id, COLORS[i % COLORS.length]));
 
-  function row(f, level = 0, inheritColor) {
+  // drop zone helper
+  function makeDropZone(where, parentId) {
+    const dz = document.createElement("div");
+    dz.className = `flow-drop-${where}`;
+    dz.dataset.parentId = String(parentId || 0);
+    if (reorderMode) {
+      dz.addEventListener("dragover", (e) => {
+        if (
+          !dragSrcParent ||
+          String(dz.dataset.parentId) !== String(dragSrcParent)
+        )
+          return;
+        e.preventDefault();
+        dz.classList.add("active");
+      });
+      dz.addEventListener("dragleave", () => dz.classList.remove("active"));
+      dz.addEventListener("drop", async (e) => {
+        dz.classList.remove("active");
+        const srcId = Number(dragSrcId);
+        if (!srcId) return;
+        await applyReorder({
+          eventId: selectedEventId,
+          parentFlowId: Number(dz.dataset.parentId || 0),
+          beforeFlowId:
+            where === "before"
+              ? Number(dz.nextElementSibling?.dataset?.flowId || 0)
+              : 0,
+          afterFlowId:
+            where === "after"
+              ? Number(dz.previousElementSibling?.dataset?.flowId || 0)
+              : 0,
+          srcFlowId: srcId,
+        });
+      });
+    }
+    return dz;
+  }
+
+  async function applyReorder({
+    eventId,
+    parentFlowId,
+    beforeFlowId,
+    afterFlowId,
+    srcFlowId,
+  }) {
+    // Build new sibling order for parentFlowId
+    const siblings = (childrenByParent.get(parentFlowId || 0) || []).map(
+      (x) => x.id
+    );
+    const srcIndex = siblings.indexOf(srcFlowId);
+    if (srcIndex >= 0) siblings.splice(srcIndex, 1);
+
+    if (beforeFlowId) {
+      const idx = siblings.indexOf(beforeFlowId);
+      if (idx >= 0) siblings.splice(idx, 0, srcFlowId);
+      else siblings.push(srcFlowId);
+    } else if (afterFlowId) {
+      const idx = siblings.indexOf(afterFlowId);
+      if (idx >= 0) siblings.splice(idx + 1, 0, srcFlowId);
+      else siblings.push(srcFlowId);
+    } else {
+      siblings.push(srcFlowId);
+    }
+
+    // Prepare payload with fresh sortOrder contiguous (0..n-1)
+    const payload = siblings.map((id, i) => ({
+      id,
+      parentFlowId: parentFlowId || null,
+      sortOrder: i,
+    }));
+
+    // Persist
+    await api(`/events/${eventId}/flows/reorder`, {
+      method: "PUT",
+      body: { parentFlowId: parentFlowId || null, order: payload },
+    });
+
+    // Reload & keep selection
+    await loadCustomer(selectedEventId);
+    if (livePreview) await renderMarkmap();
+  }
+
+  function makeRow(f, level = 0, inheritColor) {
     const color = inheritColor || colorByTopId.get(f.id) || COLORS[0];
-    const el = document.createElement("div");
-    el.className = "flow";
-    el.style.marginLeft = level * 16 + "px";
-    el.style.borderLeftColor = color;
-    el.style.background = hexToRgba(color, 0.06);
-    el.innerHTML = `
-      <input value="${escAttr(
-        f.name
-      )}" data-field="name" aria-label="Flow name"/>
-      <input value="${escAttr(
-        f.link || ""
-      )}" data-field="link" aria-label="Flow link"/>
-      <textarea data-field="description" aria-label="Flow description">${escAttr(
-        f.description || ""
-      )}</textarea>
-      <div>
-        <button data-action="save">Save</button>
-        <button data-action="addsub">Add Subflow</button>
-        <button data-action="delete" class="danger">Delete</button>
+
+    // wrapper carries indentation + dnd
+    const wrap = document.createElement("div");
+    wrap.className = "flow-wrap";
+    wrap.style.marginLeft = level * 16 + "px";
+    wrap.dataset.flowId = String(f.id);
+    wrap.dataset.parentId = String(f.parentFlowId || 0);
+
+    // DnD attributes in reorder mode (among siblings only)
+    if (reorderMode) {
+      wrap.classList.add("draggable");
+      wrap.draggable = true;
+      wrap.addEventListener("dragstart", (e) => {
+        dragSrcId = f.id;
+        dragSrcParent = String(f.parentFlowId || 0);
+        wrap.classList.add("dragging");
+        e.dataTransfer.effectAllowed = "move";
+      });
+      wrap.addEventListener("dragend", () => {
+        wrap.classList.remove("dragging");
+        dragSrcId = null;
+        dragSrcParent = null;
+      });
+    } else {
+      wrap.classList.remove("draggable", "dragging");
+      wrap.draggable = false;
+    }
+
+    // card body
+    const card = document.createElement("div");
+    card.className = "flow";
+    card.style.borderLeftColor = color;
+    card.style.background = hexToRgba(color, 0.06);
+
+    const hasLink = !!(f.link && String(f.link).trim());
+    const descHtml = f.description
+      ? escHtml(f.description)
+      : '<span class="muted">—</span>';
+    const linkHtml = hasLink
+      ? `<a href="${escHtml(f.link)}" target="_blank" rel="noopener">${escHtml(
+          f.link
+        )}</a>`
+      : `<span class="muted">No link</span>`;
+
+    card.innerHTML = `
+      <div class="kv">
+        <div class="k">Name</div>
+        <div class="v"><div class="title">${escHtml(f.name)}</div></div>
+        <div class="k k-desc">Description</div>
+        <div class="v v-desc"><div class="desc">${descHtml}</div></div>
+        <div class="k">Link</div>
+        <div class="v"><div class="link">${linkHtml}</div></div>
       </div>
     `;
-    el.querySelector('[data-action="save"]').onclick = async () => {
-      const name = el.querySelector('[data-field="name"]').value.trim();
-      const link = el.querySelector('[data-field="link"]').value.trim();
-      const description = el
-        .querySelector('[data-field="description"]')
-        .value.trim();
-      await api("/flows/" + f.id, {
-        method: "PUT",
-        body: { name, link: link || null, description: description || null },
-      });
-      await selectCustomer(selectedCustomerId);
-      await renderMarkmap();
-    };
-    el.querySelector('[data-action="addsub"]').onclick = async () => {
-      const name = prompt("Subflow name");
-      if (!name || !name.trim()) return;
-      const link = prompt("Link (optional)") || "";
-      const description = prompt("Description (optional)") || "";
-      await api("/flows/" + f.id + "/subflows", {
-        method: "POST",
-        body: {
-          name: name.trim(),
-          link: link.trim() || null,
-          description: description.trim() || null,
+
+    // actions (outside/right, as you already use)
+    const actions = document.createElement("div");
+    actions.className = "flow-actions-out";
+    actions.innerHTML = `
+      <button class="icon secondary" data-edit>Edit</button>
+      <button class="icon" data-move title="Move this flow (and subflows)">Move</button>
+      <button class="icon" data-addsub>Add Sub-workflow</button>
+      <button class="icon danger" data-delete>Delete</button>
+    `;
+
+    // handlers
+    actions.querySelector("[data-edit]").onclick = () => {
+      const keep = preferredEventId ?? getCurrentSelectedEventId();
+      flowForm({
+        title: "Edit Flow",
+        defaults: {
+          name: f.name,
+          link: f.link || "",
+          description: f.description || "",
+        },
+        onSubmit: async ({ name, link, description }) => {
+          await api("/flows/" + f.id, {
+            method: "PUT",
+            body: { name, link, description },
+          });
+          await loadCustomer(keep);
+          if (livePreview) await renderMarkmap();
         },
       });
-      await selectCustomer(selectedCustomerId);
-      await renderMarkmap();
     };
-    el.querySelector('[data-action="delete"]').onclick = async () => {
+    actions.querySelector("[data-addsub]").onclick = () => {
+      const keep = preferredEventId ?? getCurrentSelectedEventId();
+      flowForm({
+        title: "Add Sub-workflow",
+        onSubmit: async ({ name, link, description }) => {
+          await api("/flows/" + f.id + "/subflows", {
+            method: "POST",
+            body: { name, link, description },
+          });
+          await loadCustomer(keep);
+          if (livePreview) await renderMarkmap();
+        },
+      });
+    };
+    actions.querySelector("[data-delete]").onclick = async () => {
+      const keep = preferredEventId ?? getCurrentSelectedEventId();
       if (!confirm("Delete this flow and all its subflows?")) return;
       await api("/flows/" + f.id, { method: "DELETE" });
-      await selectCustomer(selectedCustomerId);
-      await renderMarkmap();
+      await loadCustomer(keep);
+      if (livePreview) await renderMarkmap();
     };
-    flowsBox.appendChild(el);
+    actions.querySelector("[data-move]").onclick = () => showMoveModal(f);
+
+    // mount
+    // drop-zone BEFORE this card (for sibling reordering)
+    if (reorderMode)
+      wrap.appendChild(makeDropZone("before", f.parentFlowId || 0));
+    wrap.appendChild(card);
+    wrap.appendChild(actions);
+    // drop-zone AFTER this card
+    if (reorderMode)
+      wrap.appendChild(makeDropZone("after", f.parentFlowId || 0));
+
+    flowsBox.appendChild(wrap);
+
+    // children
     (childrenByParent.get(f.id) || []).forEach((ch) =>
-      row(ch, level + 1, color)
+      makeRow(ch, level + 1, color)
     );
   }
-  top.forEach((f) => row(f, 0, colorByTopId.get(f.id)));
 
-  btnAddFlow.onclick = async () => {
-    const name = (flowName.value || "").trim();
-    if (!name) {
-      alert("Enter a flow name");
-      flowName.focus();
-      return;
-    }
-    const link = (flowLink.value || "").trim() || null;
-    const description = (flowDesc.value || "").trim() || null;
-    try {
-      await api(`/events/${selectedEventId}/flows`, {
-        method: "POST",
-        body: { name, link, description },
-      });
-    } catch (e) {
-      alert("Add flow failed.\n" + e.message);
-      return;
-    }
-    flowName.value = "";
-    flowLink.value = "";
-    flowDesc.value = "";
-    await selectCustomer(selectedCustomerId);
-    await renderMarkmap();
-  };
+  if (top.length === 0) {
+    const p = document.createElement("p");
+    p.textContent = "No flows yet. Use “Add Flow” to create the first one.";
+    p.className = "muted";
+    flowsBox.appendChild(p);
+  } else {
+    top.forEach((f) => makeRow(f, 0, colorByTopId.get(f.id)));
+  }
 }
 
 // ---------- markmap ----------

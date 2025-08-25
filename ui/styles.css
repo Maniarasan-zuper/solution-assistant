@@ -296,79 +296,66 @@ textarea {
   margin-bottom: 10px;
 }
 
-/* The card itself */
-.flow {
-  position: relative;
-  overflow: hidden;
-  max-width: 100%;
+/* Make each flow card a single column; .kv handles the inner 2-col layout */
+#flowsBox .flow {
+  display: block; /* was: display: grid */
+  /* grid-template-columns: 1fr 1fr;  <-- remove/override */
+  /* grid-auto-rows: auto;           <-- remove/override */
 }
-.flow .title {
-  font-weight: 700;
+
+/* Ensure the key/value grid spans the whole card width */
+#flowsBox .flow > .kv {
+  grid-column: 1 / -1; /* just in case an older grid remains */
 }
-/* Flow grid: label | value, with a full-width Description row */
+
+/* The value cell for Description should behave like Name (full width) */
 .flow .kv {
-  --label-w: 120px;
   display: grid;
-  grid-template-columns: var(--label-w) minmax(0, 1fr);
-  gap: 8px 14px;
-  position: relative;
-  max-width: 100%;
+  grid-template-columns: 130px 1fr; /* label | value */
+  column-gap: 16px;
+  row-gap: 10px;
+  align-items: start;
 }
-
-/* vertical divider behind content */
-.flow .kv::before {
-  content: "";
-  position: absolute;
-  left: var(--label-w);
-  top: 6px;
-  bottom: 6px;
-  width: 1px;
-  background: var(--border);
-  opacity: 0.6;
-  z-index: 0;
-}
-.flow .kv .k,
-.flow .kv .v {
-  position: relative;
-  z-index: 1;
-}
-
 .flow .kv .k {
-  font-size: 11.5px;
+  /* label */
+  grid-column: 1;
+  color: var(--muted);
+  font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--muted);
-  align-self: start;
 }
-.flow .kv .v {
-  min-width: 0; /* let the value column shrink */
+.flow .kv .v,
+.flow .kv .v-desc {
+  /* values incl. description */
+  grid-column: 2;
+  min-width: 0;
+  max-width: none;
+}
+.flow .kv .v-desc .desc {
+  /* actual description block */
+  display: block;
+  width: 100%;
+  white-space: normal;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
 
-/* ✨ Make DESCRIPTION span the entire card width */
-.flow .kv .k-desc,
-.flow .kv .v-desc {
-  grid-column: 1 / -1; /* take both columns */
+/* (Optional) Tame Markdown heading sizes inside cards */
+.flow .desc.md h1 {
+  font-size: 1.25rem;
+  margin: 12px 0 6px;
 }
-.flow .kv .k-desc {
-  margin-top: 4px;
+.flow .desc.md h2 {
+  font-size: 1.125rem;
+  margin: 10px 0 6px;
 }
-.flow .kv .v-desc .desc {
-  white-space: pre-wrap;
-  line-height: 1.5;
-  max-width: 100%;
+.flow .desc.md h3 {
+  font-size: 1.05rem;
+  margin: 8px 0 4px;
 }
-
-/* Links still wrap nicely */
-.flow .kv .v .link,
-.flow .kv .v .link a {
-  display: inline;
-  color: var(--accent);
-  word-break: break-all;
-}
-.flow .kv .v .link a:hover {
-  text-decoration: underline;
+.flow .desc.md p {
+  margin: 0 0 8px;
+  line-height: 1.55;
 }
 
 /* Actions OUTSIDE the card, right-aligned below */
@@ -414,4 +401,104 @@ textarea {
   .wiki-editor {
     min-height: 220px;
   }
+}
+
+/* Drag & Drop affordances */
+.flow-wrap.draggable {
+  cursor: grab;
+}
+.flow-wrap.dragging {
+  opacity: 0.6;
+  cursor: grabbing;
+}
+.flow-drop-before,
+.flow-drop-after {
+  height: 8px;
+  margin: 6px 0;
+  border-radius: 4px;
+  background: transparent;
+}
+.flow-drop-before.active,
+.flow-drop-after.active {
+  background: rgba(47, 108, 170, 0.18);
+  outline: 2px dashed var(--primary);
+}
+
+/* Move modal small helper */
+.select-wide {
+  width: 100%;
+}
+.indent-0 {
+  padding-left: 0;
+}
+.indent-1 {
+  padding-left: 14px;
+}
+.indent-2 {
+  padding-left: 28px;
+}
+.indent-3 {
+  padding-left: 42px;
+}
+
+/* Markdown look inside flow descriptions */
+.flow .desc.md {
+  line-height: 1.55;
+}
+.flow .desc.md p {
+  margin: 0 0 8px;
+}
+.flow .desc.md ul,
+.flow .desc.md ol {
+  padding-left: 20px;
+  margin: 0 0 8px;
+}
+.flow .desc.md li {
+  margin: 4px 0;
+}
+.flow .desc.md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.95em;
+  background: #f6f8fa;
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+.flow .desc.md pre {
+  background: #f6f8fa;
+  padding: 10px;
+  border-radius: 6px;
+  overflow: auto;
+}
+.flow .desc.md a {
+  color: var(--accent);
+  text-decoration: none;
+  word-break: break-all;
+}
+.flow .desc.md a:hover {
+  text-decoration: underline;
+}
+
+/* Modal preview */
+.md-tabs {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.md-tabs .tab {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+.md-tabs .tab.active {
+  background: #eef2ff;
+  border-color: #cfd8ff;
+}
+.md-preview {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: #fff;
+  max-height: 40vh;
+  overflow: auto;
 }

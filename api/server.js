@@ -5,6 +5,10 @@ import { pool } from "./db.js";
 import "dotenv/config";
 import path from "path";
 import { fileURLToPath } from "url";
+import MarkdownIt from "markdown-it";
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
+const BAD_PROTOCOL_RE = /^(vbscript|javascript|data):/i;
+md.validateLink = (url) => !BAD_PROTOCOL_RE.test(String(url || ""));
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -96,7 +100,7 @@ async function fetchGraph(customerId) {
   let flows = [];
   if (eventIds.length) {
     const [rows] = await pool.query(
-      "SELECT id, eventId, parentFlowId, name, description, link FROM Flow WHERE eventId IN (?) ORDER BY id",
+      "SELECT id, eventId, parentFlowId, name, description, link, sortOrder FROM Flow WHERE eventId IN (?)ORDER BY eventId, COALESCE(parentFlowId,0), sortOrder, id",
       [eventIds]
     );
     flows = rows;
@@ -214,7 +218,11 @@ async function fetchCustomerGraph(pool, customerId) {
   let flows = [];
   if (eventIds.length) {
     const [rows] = await pool.query(
-      "SELECT id, eventId, parentFlowId, name, description, link FROM Flow WHERE eventId IN (?) ORDER BY id",
+      `SELECT id, eventId, parentFlowId, name, description, link, sortOrder
+FROM Flow
+WHERE eventId IN (?)
+ORDER BY eventId, COALESCE(parentFlowId,0), sortOrder, id
+`,
       [eventIds]
     );
     flows = rows;
@@ -233,25 +241,30 @@ function buildFlowTree(flows) {
   const children = (id) => byParent.get(id) || [];
   return { top, children };
 }
-
 function renderFlowTreeHtml(tree) {
   const { top, children } = tree;
 
   function renderNode(f) {
     const hasChildren = children(f.id).length > 0;
     const title = escapeHtml(f.name || "");
-    const desc = nl2p(f.description || "");
-    const link = f.link
+
+    // ✅ Markdown → HTML (safe; no raw HTML allowed)
+    const raw = (f.description || "").trim();
+    const descHtml = raw ? md.render(raw) : "";
+
+    // Keep link separate; still escape attribute and open in new tab
+    const linkValue = (f.link || "").trim();
+    const linkHtml = linkValue
       ? `<div class="flow-link"><a href="${escapeHtml(
-          f.link
+          linkValue
         )}" target="_blank" rel="noopener">Link</a></div>`
       : "";
 
     const body = `
       <div class="flow-item">
         <div class="flow-title">${title}</div>
-        ${desc ? `<div class="flow-desc">${desc}</div>` : ""}
-        ${link}
+        ${descHtml ? `<div class="flow-desc">${descHtml}</div>` : ""}
+        ${linkHtml}
       </div>
     `;
 
@@ -474,8 +487,10 @@ app.get("/api/customers/:id", async (req, res) => {
   if (eventIds.length) {
     const placeholders = eventIds.map(() => "?").join(",");
     flows = await query(
-      `SELECT id, eventId, parentFlowId, name, description, link
-       FROM Flow WHERE eventId IN (${placeholders}) ORDER BY name`,
+      `SELECT id, eventId, parentFlowId, name, description, link, sortOrder
+ FROM Flow
+ WHERE eventId IN (${placeholders})
+ ORDER BY eventId, COALESCE(parentFlowId,0), sortOrder, id`,
       eventIds
     );
   }
@@ -552,7 +567,7 @@ app.delete("/api/events/:eventId", async (req, res) => {
 app.get("/api/events/:eventId/flows", async (req, res) => {
   res.json(
     await query(
-      "SELECT id, parentFlowId, name, description, link FROM Flow WHERE eventId=? ORDER BY name",
+      "SELECT id, parentFlowId, name, description, link, sortOrder FROM Flow WHERE eventId=? ORDER BY COALESCE(parentFlowId,0), sortOrder, id",
       [Number(req.params.eventId)]
     )
   );
@@ -560,11 +575,13 @@ app.get("/api/events/:eventId/flows", async (req, res) => {
 
 app.post("/api/events/:eventId/flows", async (req, res) => {
   const eventId = Number(req.params.eventId);
+  const sortOrder = await nextSortOrder(eventId, null);
+
   const { name, description, link } = req.body || {};
   if (!name) return res.status(400).json({ error: "name is required" });
   const r = await execute(
-    "INSERT INTO Flow(eventId, parentFlowId, name, description, link) VALUES(?, NULL, ?, ?, ?)",
-    [eventId, name, description || null, link || null]
+    "INSERT INTO Flow(eventId, parentFlowId, name, description, link, sortOrder) VALUES(?, NULL, ?, ?, ?, ?)",
+    [eventId, name, description || null, link || null, sortOrder]
   );
   res.status(201).json({
     id: r.insertId,
@@ -577,25 +594,53 @@ app.post("/api/events/:eventId/flows", async (req, res) => {
 });
 
 app.post("/api/flows/:flowId/subflows", async (req, res) => {
-  const parentId = Number(req.params.flowId);
-  const { name, description, link } = req.body || {};
-  if (!name) return res.status(400).json({ error: "name is required" });
-  const [parent] = await query("SELECT id, eventId FROM Flow WHERE id=?", [
-    parentId,
-  ]);
-  if (!parent) return res.status(404).json({ error: "Parent flow not found" });
-  const r = await execute(
-    "INSERT INTO Flow(eventId, parentFlowId, name, description, link) VALUES(?, ?, ?, ?, ?)",
-    [parent.eventId, parentId, name, description || null, link || null]
-  );
-  res.status(201).json({
-    id: r.insertId,
-    eventId: parent.eventId,
-    parentFlowId: parentId,
-    name,
-    description: description || null,
-    link: link || null,
-  });
+  try {
+    const parentId = Number(req.params.flowId); //
+    if (!Number.isInteger(parentId) || parentId <= 0) {
+      return res.status(400).json({ error: "Invalid parent id" });
+    }
+
+    const { name, description, link } = req.body || {};
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: "name is required" });
+    }
+
+    // fetch parent to get its eventId
+    const [parent] = await query("SELECT id, eventId FROM Flow WHERE id = ?", [
+      parentId,
+    ]);
+    if (!parent)
+      return res.status(404).json({ error: "Parent flow not found" });
+
+    // compute next sort order under this parent
+    const sortOrder = await nextSortOrder(parent.eventId, parentId);
+
+    // insert subflow
+    const r = await execute(
+      "INSERT INTO Flow(eventId, parentFlowId, name, description, link, sortOrder) VALUES(?, ?, ?, ?, ?, ?)",
+      [
+        parent.eventId,
+        parentId,
+        name.trim(),
+        description || null,
+        link || null,
+        sortOrder,
+      ]
+    );
+
+    return res.status(201).json({
+      id: r.insertId,
+      eventId: parent.eventId,
+      parentFlowId: parentId,
+      name: name.trim(),
+      description: description || null,
+      link: link || null,
+      sortOrder,
+    });
+  } catch (e) {
+    console.error("POST /flows/:flowId/subflows", e);
+    return res.status(500).json({ error: "Failed to add subflow" });
+  }
 });
 
 app.put("/api/flows/:flowId", async (req, res) => {
@@ -650,8 +695,10 @@ async function buildMarkmapData(customerId) {
   if (eventIds.length) {
     const placeholders = eventIds.map(() => "?").join(",");
     flows = await query(
-      `SELECT id, eventId, parentFlowId, name, description, link
-       FROM Flow WHERE eventId IN (${placeholders}) ORDER BY name`,
+      `SELECT id, eventId, parentFlowId, name, description, link, sortOrder
+ FROM Flow
+ WHERE eventId IN (${placeholders})
+ ORDER BY eventId, COALESCE(parentFlowId,0), sortOrder, id`,
       eventIds
     );
   }
@@ -721,6 +768,116 @@ app.get("/api/customers/:id/markup.html", async (req, res) => {
   res.send(html);
 });
 
+// PUT /api/events/:id/flows/reorder { parentFlowId: <null|id>, order: [{id, parentFlowId, sortOrder}, ...] }
+app.put("/api/events/:id/flows/reorder", async (req, res) => {
+  try {
+    const eventId = Number(req.params.id || 0);
+    const { parentFlowId = null, order = [] } = req.body || {};
+    if (!eventId) return res.status(400).send("Invalid event id");
+    if (!Array.isArray(order) || !order.length)
+      return res.status(400).send("Empty order");
+
+    // Ensure all listed flows belong to eventId and same parent
+    const ids = order.map((o) => Number(o.id));
+    const [rows] = await pool.query(
+      `SELECT id, eventId, parentFlowId FROM Flow WHERE id IN (?)`,
+      [ids]
+    );
+    if (rows.some((r) => Number(r.eventId) !== eventId))
+      return res.status(400).send("Flows must belong to the selected event");
+    if (rows.some((r) => (r.parentFlowId ?? null) !== (parentFlowId ?? null))) {
+      // Just in case client tries to change parent through reorder; block here (use Move instead)
+      return res
+        .status(400)
+        .send(
+          "Reorder only changes order among siblings; use Move to change parent/event"
+        );
+    }
+
+    // Apply new contiguous sortOrder
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      for (const { id, sortOrder } of order) {
+        await conn.query("UPDATE Flow SET sortOrder=? WHERE id=?", [
+          Number(sortOrder) || 0,
+          Number(id),
+        ]);
+      }
+      await conn.commit();
+    } finally {
+      conn.release();
+    }
+
+    res.status(204).end();
+  } catch (e) {
+    console.error("reorder error", e);
+    res.status(500).send("Failed to reorder");
+  }
+});
+
+// POST /api/flows/:id/move { toEventId, parentFlowId }
+app.post("/api/flows/:id/move", async (req, res) => {
+  try {
+    const id = Number(req.params.id || 0);
+    const { toEventId, parentFlowId = null } = req.body || {};
+    if (!id || !toEventId) return res.status(400).send("Invalid parameters");
+
+    // Validate destination event
+    const [[ev]] = await pool.query("SELECT id FROM Event WHERE id=?", [
+      toEventId,
+    ]);
+    if (!ev) return res.status(404).send("Destination event not found");
+
+    // Build subtree (MySQL 8+)
+    const [sub] = await pool
+      .query(
+        `
+      WITH RECURSIVE subtree (id) AS (
+        SELECT id FROM Flow WHERE id = ?
+        UNION ALL
+        SELECT f.id FROM Flow f INNER JOIN subtree s ON f.parentFlowId = s.id
+      )
+      SELECT id FROM subtree
+    `,
+        [id]
+      )
+      .catch(() => null);
+
+    if (!sub) return res.status(500).send("DB does not support recursive CTE");
+
+    const ids = sub.map((r) => r.id);
+    // Put moved node at end among its new siblings
+    const [[mx]] = await pool.query(
+      "SELECT COALESCE(MAX(sortOrder), -1) AS m FROM Flow WHERE eventId=? AND " +
+        (parentFlowId ? "parentFlowId=?" : "parentFlowId IS NULL"),
+      parentFlowId ? [toEventId, parentFlowId] : [toEventId]
+    );
+    const baseOrder = (mx?.m ?? -1) + 1;
+
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      await conn.query(
+        `UPDATE Flow SET eventId=?, parentFlowId=CASE WHEN id=? THEN ? ELSE parentFlowId END WHERE id IN (?)`,
+        [toEventId, id, parentFlowId, ids]
+      );
+      await conn.query("UPDATE Flow SET sortOrder=? WHERE id=?", [
+        baseOrder,
+        id,
+      ]);
+      await conn.commit();
+    } finally {
+      conn.release();
+    }
+
+    res.status(204).end();
+  } catch (e) {
+    console.error("move error", e);
+    res.status(500).send("Failed to move flow");
+  }
+});
+
 // ---------- Static UI ----------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -736,6 +893,19 @@ app.use("/api", (req, res) =>
     path: req.originalUrl,
   })
 );
+
+async function nextSortOrder(eventId, parentFlowId /* null for top-level */) {
+  const where =
+    parentFlowId == null
+      ? "eventId=? AND parentFlowId IS NULL"
+      : "eventId=? AND parentFlowId=?";
+  const params = parentFlowId == null ? [eventId] : [eventId, parentFlowId];
+  const rows = await query(
+    `SELECT COALESCE(MAX(sortOrder), -1) AS m FROM Flow WHERE ${where}`,
+    params
+  );
+  return (rows?.[0]?.m ?? -1) + 1;
+}
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`API running at http://localhost:${PORT}`));
