@@ -1,3 +1,4 @@
+/* ...existing styles (keep yours) ... */
 * {
   box-sizing: border-box;
 }
@@ -50,20 +51,41 @@ header {
   outline: none;
   min-width: 240px;
 }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .spacer {
   flex: 1;
 }
 
-button {
+button,
+.icon-btn {
   padding: 8px 12px;
   border: none;
   border-radius: 10px;
   background: var(--primary);
   color: #fff;
   cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 button.danger {
   background: var(--danger);
+}
+button.secondary,
+.icon-btn.secondary {
+  background: #eef;
+  color: #333;
 }
 button:disabled {
   opacity: 0.6;
@@ -72,8 +94,6 @@ button:disabled {
 .icon-btn {
   background: #eef;
   color: #333;
-  border-radius: 8px;
-  padding: 6px 10px;
 }
 
 main {
@@ -97,6 +117,7 @@ main {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
 }
 h1,
 h2,
@@ -108,6 +129,12 @@ h3 {
   gap: 8px;
   margin: 8px 0;
   flex-wrap: wrap;
+  align-items: center;
+}
+.lbl {
+  width: 84px;
+  color: #444;
+  font-size: 14px;
 }
 input,
 select,
@@ -151,7 +178,32 @@ textarea {
   margin-top: 8px;
 }
 
-/* Flow rows (left panel). JS sets border-left-color + background tint per top-level flow */
+/* Home: customer grid */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+.grid .grid-item {
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 12px;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+.grid .grid-item h4 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  word-break: break-word;
+}
+.grid .grid-item .row {
+  margin: 0;
+}
+
+/* Flows (workspace) */
 #flowsBox .flow {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -170,7 +222,7 @@ textarea {
   width: 100%;
 }
 
-/* Markmap color chip in labels */
+/* Markmap chip */
 .mm-chip {
   display: inline-block;
   width: 0.65em;
@@ -180,7 +232,7 @@ textarea {
   vertical-align: -0.1em;
 }
 
-/* Modal (ONLY for Add Customer / Add Event) */
+/* Modal */
 .backdrop {
   position: fixed;
   inset: 0;
@@ -237,4 +289,129 @@ textarea {
   border: 1px dashed var(--border);
   border-radius: 12px;
   padding: 12px;
+} /* Ensure flow cards never overflow their container */
+
+/* Wrapper so actions can sit outside but align with the card and indentation */
+.flow-wrap {
+  margin-bottom: 10px;
+}
+
+/* The card itself */
+.flow {
+  position: relative;
+  overflow: hidden;
+  max-width: 100%;
+}
+.flow .title {
+  font-weight: 700;
+}
+/* Flow grid: label | value, with a full-width Description row */
+.flow .kv {
+  --label-w: 120px;
+  display: grid;
+  grid-template-columns: var(--label-w) minmax(0, 1fr);
+  gap: 8px 14px;
+  position: relative;
+  max-width: 100%;
+}
+
+/* vertical divider behind content */
+.flow .kv::before {
+  content: "";
+  position: absolute;
+  left: var(--label-w);
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--border);
+  opacity: 0.6;
+  z-index: 0;
+}
+.flow .kv .k,
+.flow .kv .v {
+  position: relative;
+  z-index: 1;
+}
+
+.flow .kv .k {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  align-self: start;
+}
+.flow .kv .v {
+  min-width: 0; /* let the value column shrink */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* ✨ Make DESCRIPTION span the entire card width */
+.flow .kv .k-desc,
+.flow .kv .v-desc {
+  grid-column: 1 / -1; /* take both columns */
+}
+.flow .kv .k-desc {
+  margin-top: 4px;
+}
+.flow .kv .v-desc .desc {
+  white-space: pre-wrap;
+  line-height: 1.5;
+  max-width: 100%;
+}
+
+/* Links still wrap nicely */
+.flow .kv .v .link,
+.flow .kv .v .link a {
+  display: inline;
+  color: var(--accent);
+  word-break: break-all;
+}
+.flow .kv .v .link a:hover {
+  text-decoration: underline;
+}
+
+/* Actions OUTSIDE the card, right-aligned below */
+.flow-wrap {
+  margin-bottom: 10px;
+}
+.flow-actions-out {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+.flow-actions-out .icon {
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+
+/* Small screens: narrower label column */
+@media (max-width: 700px) {
+  .flow .kv {
+    --label-w: 90px;
+  }
+}
+
+/* Wiki-like editor feel for modal description */
+.wiki-editor {
+  min-height: 280px; /* more vertical space */
+  font-size: 15.5px; /* slightly larger text */
+  line-height: 1.6; /* airy like Atlassian */
+  padding: 12px 14px;
+  resize: vertical; /* allow manual grow/shrink */
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial,
+    "Noto Sans", "Helvetica Neue", sans-serif;
+}
+
+.wiki-editor::placeholder {
+  color: var(--muted);
+  opacity: 0.9;
+}
+
+/* Small screens: a bit shorter to fit */
+@media (max-height: 700px) {
+  .wiki-editor {
+    min-height: 220px;
+  }
 }

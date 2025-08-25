@@ -1,12 +1,13 @@
-// UI: Add Customer & Add Event moved to modals; everything else inline as before.
+// UX refactor: Contextual CTA (Call To Action) lives in the selected customer's panel.
+// Only Add Customer / Add Event use modals; rest stays inline.
 
-// Auto-detect API base
+// ---------- API base ----------
 let API = ""; // same-origin default
 try {
   if (location.port !== "3000") API = "http://localhost:3000/api";
 } catch {}
 
-// HTTP helper
+// ---------- helpers ----------
 async function api(path, opts = {}) {
   const base = API || "/api";
   const res = await fetch(base + path, {
@@ -23,8 +24,6 @@ async function api(path, opts = {}) {
   }
   return res.status === 204 ? null : res.json();
 }
-
-// Helpers
 function debounce(fn, wait = 250) {
   let t;
   return (...a) => {
@@ -73,7 +72,7 @@ function escAttr(s = "") {
     .replace(/</g, "&lt;");
 }
 
-// Elements
+// ---------- elements ----------
 const customerSearch = document.getElementById("customerSearch");
 const btnClearSearch = document.getElementById("btnClearSearch");
 const customerResults = document.getElementById("customerResults");
@@ -81,6 +80,11 @@ const searchHint = document.getElementById("searchHint");
 
 const detailCard = document.getElementById("detailCard");
 const custName = document.getElementById("custName");
+
+const custCta = document.getElementById("custCta");
+const btnPrimaryCTA = document.getElementById("btnPrimaryCTA");
+const btnAddEventCTA = document.getElementById("btnAddEventCTA");
+
 const custEditName = document.getElementById("custEditName");
 const custEditNotes = document.getElementById("custEditNotes");
 const btnSaveCustomer = document.getElementById("btnSaveCustomer");
@@ -96,25 +100,26 @@ const flowDesc = document.getElementById("flowDesc");
 const btnAddFlow = document.getElementById("btnAddFlow");
 
 const btnAddCustomerTop = document.getElementById("btnAddCustomerTop");
-const btnAddEventTop = document.getElementById("btnAddEventTop");
+
 const btnDownloadMap = document.getElementById("btnDownloadMap");
 const btnResetView = document.getElementById("btnResetView");
 
 const svg = document.getElementById("mindmap");
 const previewTitle = document.getElementById("previewTitle");
 
+// Modal bits (Add Customer / Add Event)
 const modalBackdrop = document.getElementById("modalBackdrop");
 const modal = document.getElementById("modal");
 const modalTitle = document.getElementById("modalTitle");
 const modalBody = document.getElementById("modalBody");
 const modalClose = document.getElementById("modalClose");
 
-// State
+// ---------- state ----------
 let selectedCustomerId = null;
 let currentData = null; // {customer, events, flows}
 let mm = null;
 
-// ---- Modal utils (used only for Add Customer / Add Event) ----
+// ---------- modal utils ----------
 function openModal(title, bodyEl) {
   modalTitle.textContent = title;
   modalBody.innerHTML = "";
@@ -140,7 +145,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !modal.classList.contains("hidden")) closeModal();
 });
 
-// ---- Search-first UX (list stays inline) ----
+// ---------- search ----------
 async function searchCustomers(term) {
   const q = (term || "").trim();
   if (!q) {
@@ -195,24 +200,76 @@ btnClearSearch.onclick = () => {
   customerSearch.focus();
 };
 
-// ---- Customer load & edit (inline)
+// ---------- CTC logic ----------
+function updateCustomerCTC() {
+  if (!currentData || !selectedCustomerId) {
+    custCta.style.display = "none";
+    return;
+  }
+  custCta.style.display = "flex";
+
+  const hasEvents = currentData.events.length > 0;
+  const selectedEventId = Number(
+    eventSelect.value || (currentData.events[0]?.id ?? 0)
+  );
+  const flowsForSelected = selectedEventId
+    ? currentData.flows.filter(
+        (f) => f.eventId === selectedEventId && !f.parentFlowId
+      )
+    : [];
+
+  // Primary CTA text + behavior
+  if (!hasEvents) {
+    btnPrimaryCTA.textContent = "Add first event";
+    btnPrimaryCTA.onclick = () => openAddEventModal();
+  } else if (flowsForSelected.length === 0) {
+    btnPrimaryCTA.textContent = "Add first flow";
+    btnPrimaryCTA.onclick = () => {
+      document.getElementById("flowName").focus();
+      document
+        .getElementById("flowName")
+        .scrollIntoView({ behavior: "smooth", block: "center" });
+    };
+  } else {
+    btnPrimaryCTA.textContent = "Add flow";
+    btnPrimaryCTA.onclick = () => {
+      document.getElementById("flowName").focus();
+      document
+        .getElementById("flowName")
+        .scrollIntoView({ behavior: "smooth", block: "center" });
+    };
+  }
+
+  // Secondary CTA: Add Event (always available in context)
+  btnAddEventCTA.onclick = () => openAddEventModal();
+}
+
+// ---------- customer load & save ----------
 async function selectCustomer(id) {
   selectedCustomerId = id;
   currentData = await api(`/customers/${id}`);
   detailCard.style.display = "block";
-  custName.textContent = currentData.customer.name;
+  custName.textContent = currentData.customer.name || "—";
   custEditName.value = currentData.customer.name || "";
   custEditNotes.value = currentData.customer.notes || "";
 
   renderEvents();
   await renderMarkmap();
+  updateCustomerCTC();
 }
 btnSaveCustomer.onclick = async () => {
   if (selectedCustomerId == null) return;
-  await api(`/customers/${selectedCustomerId}`, {
-    method: "PUT",
-    body: { name: custEditName.value, notes: custEditNotes.value },
-  });
+  try {
+    btnSaveCustomer.disabled = true;
+    btnSaveCustomer.textContent = "Saving…";
+    await api(`/customers/${selectedCustomerId}`, {
+      method: "PUT",
+      body: { name: custEditName.value, notes: custEditNotes.value },
+    });
+  } finally {
+    btnSaveCustomer.disabled = false;
+    btnSaveCustomer.textContent = "Save";
+  }
   await selectCustomer(selectedCustomerId);
   if (customerSearch.value.trim()) doSearch(customerSearch.value);
 };
@@ -227,9 +284,9 @@ btnDeleteCustomer.onclick = async () => {
   else customerResults.innerHTML = "";
 };
 
-// ---- Events (inline select/list; Add Event moved to modal)
+// ---------- events (inline)
 function renderEvents() {
-  // fill dropdown
+  // dropdown
   eventSelect.innerHTML = "";
   currentData.events.forEach((e) => {
     const opt = document.createElement("option");
@@ -240,7 +297,7 @@ function renderEvents() {
   if (!eventSelect.value && currentData.events[0])
     eventSelect.value = currentData.events[0].id;
 
-  // list with rename/delete
+  // list
   eventList.innerHTML = "";
   currentData.events.forEach((e) => {
     const li = document.createElement("li");
@@ -275,10 +332,14 @@ function renderEvents() {
   });
 
   renderFlows();
+  updateCustomerCTC();
 }
-eventSelect.onchange = () => renderFlows();
+eventSelect.onchange = () => {
+  renderFlows();
+  updateCustomerCTC();
+};
 
-// ---- Flows (inline)
+// ---------- flows (inline)
 function renderFlows() {
   flowsBox.innerHTML = "";
   const selectedEventId = Number(
@@ -311,9 +372,13 @@ function renderFlows() {
     el.style.borderLeftColor = color;
     el.style.background = hexToRgba(color, 0.06);
     el.innerHTML = `
-      <input value="${escAttr(f.name)}" data-field="name"/>
-      <input value="${escAttr(f.link || "")}" data-field="link"/>
-      <textarea data-field="description">${escAttr(
+      <input value="${escAttr(
+        f.name
+      )}" data-field="name" aria-label="Flow name"/>
+      <input value="${escAttr(
+        f.link || ""
+      )}" data-field="link" aria-label="Flow link"/>
+      <textarea data-field="description" aria-label="Flow description">${escAttr(
         f.description || ""
       )}</textarea>
       <div>
@@ -390,7 +455,7 @@ function renderFlows() {
   };
 }
 
-// ---- Markmap preview (unchanged)
+// ---------- markmap ----------
 function colorizeMarkmapData(data) {
   if (!data?.children) return data;
   data.children.forEach((eventNode) => {
@@ -449,14 +514,18 @@ btnDownloadMap.onclick = () => {
   );
 };
 
-// ---- Add Customer (modal)
+// ---------- Add Customer (modal) ----------
 btnAddCustomerTop.onclick = () => {
   const box = document.createElement("div");
   box.className = "section";
   box.innerHTML = `
     <div class="row">
-      <input id="m_custName" placeholder="Customer name" style="min-width:280px;"/>
-      <input id="m_custNotes" placeholder="Notes (optional)" style="min-width:280px;"/>
+      <label class="lbl">Name</label>
+      <input id="m_custName" placeholder="Customer name" style="min-width:280px;" />
+    </div>
+    <div class="row">
+      <label class="lbl">Notes</label>
+      <input id="m_custNotes" placeholder="Notes (optional)" style="min-width:280px;" />
     </div>
     <div class="row">
       <button id="m_save">Create</button>
@@ -480,9 +549,9 @@ btnAddCustomerTop.onclick = () => {
   openModal("Add Customer", box);
 };
 
-// ---- Add Event (modal) — uses selected customer if present; otherwise lets you pick
-btnAddEventTop.onclick = async () => {
-  // load standard events
+// ---------- Add Event (modal) ----------
+async function openAddEventModal() {
+  // Load standard events
   let std = [];
   try {
     std = await api("/standard-events");
@@ -493,12 +562,12 @@ btnAddEventTop.onclick = async () => {
   box.className = "section";
   box.innerHTML = `
     <div class="row">
-      <label style="min-width:120px;">Customer</label>
+      <label class="lbl">Customer</label>
       <select id="m_eventCustomer" style="min-width:300px;"></select>
       <input id="m_eventCustSearch" placeholder="Search customers…" style="min-width:220px;" />
     </div>
     <div class="row">
-      <label style="min-width:120px;">Event</label>
+      <label class="lbl">Event</label>
       <select id="m_eventStd" style="min-width:280px;">
         <option value="" selected disabled>Choose a standard event…</option>
         ${std
@@ -580,11 +649,15 @@ btnAddEventTop.onclick = async () => {
     }
     await api(`/customers/${cid}/events`, { method: "POST", body: { name } });
     closeModal();
-    if (cid === selectedCustomerId) await selectCustomer(cid);
+    if (cid === selectedCustomerId) {
+      await selectCustomer(cid);
+      updateCustomerCTC();
+    }
   };
 
   openModal("Add Event", box);
-};
+}
+btnAddEventCTA.onclick = () => openAddEventModal(); // (wired again by updateCustomerCTC, but safe)
 
-// ---- Init
+// ---------- init ----------
 customerSearch.focus();
