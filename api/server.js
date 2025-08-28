@@ -6,6 +6,8 @@ import "dotenv/config";
 import path from "path";
 import { fileURLToPath } from "url";
 import MarkdownIt from "markdown-it";
+import { runAssistantReview } from "./assistant-review.js";
+
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
 const BAD_PROTOCOL_RE = /^(vbscript|javascript|data):/i;
 md.validateLink = (url) => !BAD_PROTOCOL_RE.test(String(url || ""));
@@ -46,6 +48,57 @@ async function execute(sql, params = []) {
 function escapeLike(s = "") {
   return String(s).replace(/!/g, "!!").replace(/%/g, "!%").replace(/_/g, "!_");
 }
+
+function flatFlows(graph) {
+  const evById = new Map(graph.events.map((e) => [e.id, e.name]));
+  return graph.flows.map((f) => ({
+    id: f.id,
+    event: evById.get(f.eventId) || "",
+    name: f.name || "",
+    description: f.description || "",
+    link: f.link || "",
+  }));
+}
+
+// POST /api/customers/:id/ai-review  { extraContext?: string }
+
+app.post("/api/customers/:id/ai-review", async (req, res) => {
+  try {
+    const id = Number(req.params.id || 0);
+    if (!id) return res.status(400).json({ error: "Invalid customer id" });
+
+    const graph = await fetchCustomerGraph(pool, id);
+    if (!graph) return res.status(404).json({ error: "Customer not found" });
+
+    const evById = new Map(graph.events.map((e) => [e.id, e.name]));
+    const flows = graph.flows.map((f) => ({
+      id: f.id,
+      event: evById.get(f.eventId) || "",
+      name: f.name || "",
+      description: f.description || "",
+      link: f.link || "",
+    }));
+    if (!flows.length) return res.json({ reviews: [] });
+
+    const assistantId = process.env.OPENAI_ASSISTANT_ID;
+    if (!assistantId)
+      return res.status(500).json({ error: "Assistant ID not configured" });
+
+    const payload = {
+      customer: graph.customer.name,
+      company_context: req.body?.extraContext || "",
+      flows,
+    };
+
+    const result = await runAssistantReview(assistantId, payload, {
+      debug: true,
+    });
+    res.json(result);
+  } catch (e) {
+    console.error("assistant ai-review error", e);
+    res.status(500).json({ error: "AI review failed" });
+  }
+});
 
 // ---------- Customers (SEARCH-ENABLED) ----------
 app.get("/api/customers", async (req, res) => {

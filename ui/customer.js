@@ -80,6 +80,8 @@ function renderMarkdownSafe(txt = "") {
   return window.DOMPurify ? DOMPurify.sanitize(raw) : raw;
 }
 
+let aiReviewMap = new Map(); // flowId -> { verdict, rationale }
+
 // ---------- elements ----------
 const pageTitle = document.getElementById("pageTitle");
 const custNameEl = document.getElementById("custName");
@@ -132,6 +134,33 @@ modalBackdrop.onclick = (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !modal.classList.contains("hidden")) closeModal();
 });
+
+const btnAiReview = document.getElementById("btnAiReview");
+if (btnAiReview) {
+  btnAiReview.onclick = async () => {
+    if (!customerId) return alert("No customer");
+
+    btnAiReview.disabled = true;
+    const original = btnAiReview.textContent;
+    btnAiReview.textContent = "AI Reviewing…";
+
+    try {
+      const result = await api(`/customers/${customerId}/ai-review`, {
+        method: "POST",
+        body: {}, // or include { extraContext: "..." } if you fetch it client-side
+      });
+      aiReviewMap = new Map(
+        (result?.reviews || []).map((r) => [Number(r.flowId), r])
+      );
+      renderFlows(); // repaint cards to show verdict lines
+    } catch (e) {
+      alert(e.message || "AI review failed");
+    } finally {
+      btnAiReview.disabled = false;
+      btnAiReview.textContent = original;
+    }
+  };
+}
 
 // actions (outside/right, below the card)
 const actions = document.createElement("div");
@@ -640,6 +669,21 @@ function renderFlows() {
 
     // handlers (keep your existing edit/addsub/delete; add this line for Move)
     actions.querySelector("[data-move]").onclick = () => showMoveModal(f);
+
+    // AI verdict line (if we have one for this flow)
+    const r = aiReviewMap.get(Number(f.id));
+    if (r) {
+      const line = document.createElement("div");
+      line.className = "ai-review";
+      const cls = r.verdict === "POSSIBLE" ? "ok" : "warn";
+      const label = r.verdict === "POSSIBLE" ? "Possible" : "Needs discussion";
+      line.innerHTML = `
+    <span class="ai-chip ${cls}">AI review: ${label}</span>
+    <span class="ai-note">${escHtml(r.rationale || "")}</span>
+  `;
+      // place the verdict line right under the card (above action buttons looks nice)
+      wrap.appendChild(line);
+    }
 
     // mount (keep as-is)
     wrap.appendChild(card);

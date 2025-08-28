@@ -12,6 +12,7 @@
     "iconv-lite": "^0.6.3",
     "markdown-it": "^14.1.0",
     "mysql2": "^3.11.0",
+    "openai": "^5.15.0",
     "puppeteer": "^24.17.0"
   }
 }

@@ -502,3 +502,30 @@ textarea {
   max-height: 40vh;
   overflow: auto;
 }
+
+.ai-review {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0 0 auto; /* right-align under the card */
+  width: fit-content;
+}
+.ai-chip {
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.ai-chip.ok {
+  background: #f0fff4;
+  border-color: #b7eb8f;
+}
+.ai-chip.warn {
+  background: #fff7e6;
+  border-color: #ffd591;
+}
+.ai-note {
+  color: var(--muted);
+  font-size: 12px;
+  max-width: 760px;
+}
